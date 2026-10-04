@@ -101,35 +101,75 @@ func (m *Model) openCredentialForm(t config.Target) tea.Cmd {
 
 // openTargetForm adds a target, or edits existing when non-nil.
 func (m *Model) openTargetForm(existing *config.Target) tea.Cmd {
-	t := config.Target{Driver: driver.Names()[0], Host: "localhost"}
-	port := ""
+	in := newTargetInput(existing)
 	title := "Add target"
 	if existing != nil {
-		t = *existing
-		title = "Edit target " + t.Name
+		title = "Edit target " + existing.Name
 	}
-	if t.Port != 0 {
-		port = strconv.Itoa(t.Port)
-	}
-	var (
-		pw      string
-		persist = true
-	)
-
-	nameField := huh.NewInput().Title("Name").Value(&t.Name).Validate(func(s string) error {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return errors.New("required")
+	return m.openForm(title, huh.NewForm(huh.NewGroup(in.fields(m.proj, existing != nil)...)), func(m *Model) tea.Cmd {
+		t := in.apply(m.proj, existing)
+		if existing == nil {
+			m.cursor = len(m.proj.Targets) - 1
 		}
-		if _, dup := m.proj.Target(s); dup {
-			return errors.New("a target with this name exists")
+		if err := m.proj.Save(); err != nil {
+			m.notice = "saving config: " + err.Error()
 		}
-		return nil
+		if in.pw != "" {
+			if err := m.proj.SetPassword(t, in.pw, in.persist); err != nil {
+				m.notice = "saving password: " + err.Error()
+			}
+		}
+		m.state(t.Name) // ensure state exists
+		return m.refresh(t)
 	})
-	fields := []huh.Field{
-		huh.NewSelect[string]().Title("Driver").Options(huh.NewOptions(driver.Names()...)...).Value(&t.Driver),
-		huh.NewInput().Title("Host").Value(&t.Host).Validate(required),
-		huh.NewInput().Title("Port").Description("blank = driver default").Value(&port).Validate(func(s string) error {
+}
+
+// targetInput is the editable state behind the add/edit target form. It is
+// shared by the TUI and by `godwit init`.
+type targetInput struct {
+	t       config.Target
+	port    string
+	pw      string
+	persist bool
+}
+
+func newTargetInput(existing *config.Target) *targetInput {
+	in := &targetInput{
+		t:       config.Target{Driver: driver.Names()[0], Host: "localhost"},
+		persist: true,
+	}
+	if existing != nil {
+		in.t = *existing
+	}
+	if in.t.Port != 0 {
+		in.port = strconv.Itoa(in.t.Port)
+	}
+	return in
+}
+
+// fields builds the form fields. When editing, the name is fixed (the
+// password key derives from it) and an empty password means "keep current".
+func (in *targetInput) fields(p *config.Project, editing bool) []huh.Field {
+	var fields []huh.Field
+	pwTitle := "Password"
+	if editing {
+		pwTitle = "Password (blank = keep current)"
+	} else {
+		fields = append(fields, huh.NewInput().Title("Name").Value(&in.t.Name).Validate(func(s string) error {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return errors.New("required")
+			}
+			if _, dup := p.Target(s); dup {
+				return errors.New("a target with this name exists")
+			}
+			return nil
+		}))
+	}
+	return append(fields,
+		huh.NewSelect[string]().Title("Driver").Options(huh.NewOptions(driver.Names()...)...).Value(&in.t.Driver),
+		huh.NewInput().Title("Host").Value(&in.t.Host).Validate(required),
+		huh.NewInput().Title("Port").Description("blank = driver default").Value(&in.port).Validate(func(s string) error {
 			if s == "" {
 				return nil
 			}
@@ -138,44 +178,28 @@ func (m *Model) openTargetForm(existing *config.Target) tea.Cmd {
 			}
 			return nil
 		}),
-		huh.NewInput().Title("Database").Value(&t.Database).Validate(required),
-		huh.NewInput().Title("User").Value(&t.User).Validate(required),
-	}
-	pwTitle := "Password"
-	if existing != nil {
-		pwTitle = "Password (blank = keep current)"
-	} else {
-		fields = append([]huh.Field{nameField}, fields...)
-	}
-	fields = append(fields,
-		huh.NewInput().Title(pwTitle).EchoMode(huh.EchoModePassword).Value(&pw),
-		huh.NewConfirm().Title("Save password to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&persist),
+		huh.NewInput().Title("Database").Value(&in.t.Database).Validate(required),
+		huh.NewInput().Title("User").Value(&in.t.User).Validate(required),
+		huh.NewInput().Title(pwTitle).EchoMode(huh.EchoModePassword).Value(&in.pw),
+		huh.NewConfirm().Title("Save password to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&in.persist),
 	)
+}
 
-	return m.openForm(title, huh.NewForm(huh.NewGroup(fields...)), func(m *Model) tea.Cmd {
-		t.Name = strings.TrimSpace(t.Name)
-		t.Port, _ = strconv.Atoi(port)
-		if existing != nil {
-			for i := range m.proj.Targets {
-				if m.proj.Targets[i].Name == existing.Name {
-					m.proj.Targets[i] = t
-				}
-			}
-		} else {
-			m.proj.Targets = append(m.proj.Targets, t)
-			m.cursor = len(m.proj.Targets) - 1
+// apply adds the target to p (or replaces existing) in memory only.
+func (in *targetInput) apply(p *config.Project, existing *config.Target) config.Target {
+	t := in.t
+	t.Name = strings.TrimSpace(t.Name)
+	t.Port, _ = strconv.Atoi(in.port)
+	if existing == nil {
+		p.Targets = append(p.Targets, t)
+		return t
+	}
+	for i := range p.Targets {
+		if p.Targets[i].Name == existing.Name {
+			p.Targets[i] = t
 		}
-		if err := m.proj.Save(); err != nil {
-			m.notice = "saving config: " + err.Error()
-		}
-		if pw != "" {
-			if err := m.proj.SetPassword(t, pw, persist); err != nil {
-				m.notice = "saving password: " + err.Error()
-			}
-		}
-		m.state(t.Name) // ensure state exists
-		return m.refresh(t)
-	})
+	}
+	return t
 }
 
 func required(s string) error {
