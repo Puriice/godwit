@@ -1,0 +1,21 @@
+# Databases for integration tests:
+#   docker compose up -d
+#   $env:GODWIT_TEST_POSTGRES="postgres://godwit:godwit@localhost:55432/godwit"
+#   $env:GODWIT_TEST_MYSQL="godwit:godwit@tcp(localhost:53306)/godwit"
+#   go test ./internal/runner -run Integration -v
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: godwit
+      POSTGRES_PASSWORD: godwit
+      POSTGRES_DB: godwit
+    ports: ["55432:5432"]
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_USER: godwit
+      MYSQL_PASSWORD: godwit
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: godwit
+    ports: ["53306:3306"]
