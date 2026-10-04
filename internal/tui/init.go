@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
 	"github.com/puriice/godwit/internal/config"
@@ -17,13 +18,13 @@ import (
 // is written if the user cancels. Re-running it edits the existing project.
 func RunInit(p *config.Project) error {
 	dir := p.MigrationsDir
-	if err := huh.NewForm(huh.NewGroup(
+	if err := runForm(huh.NewGroup(
 		huh.NewInput().
 			Title("Migrations directory").
 			Description("relative to " + p.Root).
 			Value(&dir).
 			Validate(required),
-	)).Run(); err != nil {
+	)); err != nil {
 		return cancelled(err)
 	}
 
@@ -40,16 +41,16 @@ func RunInit(p *config.Project) error {
 	}
 	for {
 		var add bool
-		if err := huh.NewForm(huh.NewGroup(
+		if err := runForm(huh.NewGroup(
 			huh.NewConfirm().Title(question).Affirmative("Yes").Negative("No").Value(&add),
-		)).Run(); err != nil {
+		)); err != nil {
 			return cancelled(err)
 		}
 		if !add {
 			break
 		}
 		in := newTargetInput(nil)
-		if err := huh.NewForm(huh.NewGroup(in.fields(p, false)...)).Run(); err != nil {
+		if err := runForm(huh.NewGroup(in.fields(p, false)...)); err != nil {
 			return cancelled(err)
 		}
 		t := in.apply(p, nil)
@@ -73,6 +74,13 @@ func RunInit(p *config.Project) error {
 	}
 	fmt.Printf("Initialized %s\n  migrations: %s\n  targets:    %d\n", p.Dir(), p.MigrationsPath(), len(p.Targets))
 	return nil
+}
+
+// runForm shows one form on the alternate screen. Inline forms draw at the
+// cursor row, which sits at the bottom of the terminal after a shell prompt;
+// the alternate screen starts at the top.
+func runForm(g *huh.Group) error {
+	return huh.NewForm(g).WithProgramOptions(tea.WithAltScreen()).Run()
 }
 
 func cancelled(err error) error {

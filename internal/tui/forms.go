@@ -32,9 +32,25 @@ func (m *Model) openForm(title string, f *huh.Form, onDone func(m *Model) tea.Cm
 	}
 	m.screen = scrForm
 	m.formTitle = title
-	m.form = f.WithWidth(formWidth(m.width))
+	m.form = f
 	m.onFormDone = onDone
+	m.fitForm()
 	return m.form.Init()
+}
+
+// formChrome is the number of lines viewForm adds around the form itself:
+// title, blank line, blank line, help.
+const formChrome = 4
+
+// fitForm sizes the form to the terminal. If the form is taller than the
+// space left, huh scrolls inside it and keeps the focused field visible,
+// instead of the bottom of an oversized view being what the terminal shows.
+func (m *Model) fitForm() {
+	if m.form == nil {
+		return
+	}
+	m.form = m.form.WithWidth(formWidth(m.width))
+	m.form.Update(tea.WindowSizeMsg{Width: m.width, Height: max(m.height-formChrome, 3)})
 }
 
 func (m *Model) closeForm() {

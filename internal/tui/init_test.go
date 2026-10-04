@@ -1,10 +1,29 @@
 package tui
 
 import (
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/puriice/godwit/internal/config"
 )
+
+func TestTargetFormFitsShortTerminalAtTop(t *testing.T) {
+	for _, h := range []int{8, 12, 40} {
+		m := testModel(t)
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+		m.openTargetForm(nil)
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) > h {
+			t.Errorf("height %d: view has %d lines", h, len(lines))
+		}
+		view := strings.Join(lines, "\n")
+		if !strings.Contains(view, "Name") {
+			t.Errorf("height %d: first field (Name) not visible:\n%s", h, view)
+		}
+	}
+}
 
 func TestTargetInputApply(t *testing.T) {
 	p, _ := config.Load(t.TempDir())
