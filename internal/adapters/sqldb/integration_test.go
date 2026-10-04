@@ -90,7 +90,7 @@ func runIntegration(t *testing.T, tg domain.Target, pw string) {
 		}
 	}
 
-	svc, err := app.New(filestore.New(root), fsmigrations.New(root), sqldb.NewFactory())
+	svc, err := app.New(filestore.New(root), fsmigrations.New(root, sqldb.NewFactory().Drivers()), sqldb.NewFactory())
 	if err != nil {
 		t.Fatal(err)
 	}

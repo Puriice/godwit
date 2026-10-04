@@ -25,7 +25,7 @@ func (noDBs) Open(context.Context, domain.Target, string) (app.Database, error) 
 func newService(t *testing.T) (*app.Service, string) {
 	t.Helper()
 	root := t.TempDir()
-	svc, err := app.New(filestore.New(root), fsmigrations.New(root), noDBs{})
+	svc, err := app.New(filestore.New(root), fsmigrations.New(root, noDBs{}.Drivers()), noDBs{})
 	if err != nil {
 		t.Fatal(err)
 	}

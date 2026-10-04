@@ -8,6 +8,8 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
+var testDrivers = []string{"mysql", "postgres"}
+
 func TestParse(t *testing.T) {
 	src := `-- header comment
 -- +godwit Up
@@ -34,7 +36,7 @@ $$ LANGUAGE plpgsql;
 DROP TABLE users;
 -- +godwit NoTransaction
 `
-	p, err := Parse(src)
+	p, err := Parse(src, testDrivers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,7 @@ DROP TABLE users;
 }
 
 func TestParseDriverResetsPerSection(t *testing.T) {
-	p, err := Parse("-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n-- +godwit Down\nSELECT 2;\n")
+	p, err := Parse("-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n-- +godwit Down\nSELECT 2;\n", testDrivers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestParseErrors(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse(src); err == nil {
+			if _, err := Parse(src, testDrivers); err == nil {
 				t.Error("expected error")
 			}
 		})
@@ -102,7 +104,7 @@ func TestParseUnspecifiedDriverMeansAll(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
-			p, err := Parse(src)
+			p, err := Parse(src, testDrivers)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +119,7 @@ func TestParseUnspecifiedDriverMeansAll(t *testing.T) {
 	}
 
 	// A blank directive after a specific one switches back to all.
-	p, err := Parse("-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n-- +godwit driver:\nSELECT 2;\n")
+	p, err := Parse("-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n-- +godwit driver:\nSELECT 2;\n", testDrivers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +132,57 @@ func TestParseUnspecifiedDriverMeansAll(t *testing.T) {
 		"-- +godwit driver:\n-- +godwit Up\n",
 		"-- +godwit Up\nSELECT\n-- +godwit driver:\n1;\n",
 	} {
-		if _, err := Parse(src); err == nil {
+		if _, err := Parse(src, testDrivers); err == nil {
 			t.Errorf("expected error for %q", src)
 		}
+	}
+}
+
+func TestParseRejectsUnknownDriver(t *testing.T) {
+	cases := map[string]string{
+		"typo":              "-- +godwit Up\n-- +godwit driver: postgress\nSELECT 1;\n",
+		"unsupported":       "-- +godwit Up\n-- +godwit driver: sqlite\nSELECT 1;\n",
+		"no colon":          "-- +godwit Up\n-- +godwit driver oracle\nSELECT 1;\n",
+		"in down section":   "-- +godwit Up\nSELECT 1;\n-- +godwit Down\n-- +godwit driver: mssql\nSELECT 2;\n",
+		"after valid block": "-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n-- +godwit driver: mysqll\nSELECT 2;\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse(src, testDrivers)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "unknown driver") || !strings.Contains(err.Error(), "all, mysql, postgres") {
+				t.Errorf("error should name the problem and the valid choices: %v", err)
+			}
+		})
+	}
+
+	// The error points at the offending line.
+	_, err := Parse("-- +godwit Up\nSELECT 1;\n-- +godwit driver: postgress\nSELECT 2;\n", testDrivers)
+	if err == nil || !strings.Contains(err.Error(), "line 3") || !strings.Contains(err.Error(), `"postgress"`) {
+		t.Errorf("err = %v", err)
+	}
+
+	// With no known drivers configured, only "all" is accepted.
+	if _, err := Parse("-- +godwit Up\n-- +godwit driver: mysql\nSELECT 1;\n", nil); err == nil {
+		t.Error("expected error when no drivers are known")
+	}
+	if _, err := Parse("-- +godwit Up\n-- +godwit driver: all\nSELECT 1;\n", nil); err != nil {
+		t.Errorf("all must always be valid: %v", err)
+	}
+}
+
+func TestParseAcceptsDriverAliasesAndCase(t *testing.T) {
+	p, err := Parse("-- +godwit Up\n-- +godwit driver: PostgreSQL\nSELECT 1;\n-- +godwit driver: MariaDB\nSELECT 2;\n-- +godwit driver: MySQL\nSELECT 3;\n", testDrivers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range p.Up {
+		got = append(got, s.Driver)
+	}
+	if strings.Join(got, ",") != "postgres,mysql,mysql" {
+		t.Errorf("normalized drivers = %v", got)
 	}
 }

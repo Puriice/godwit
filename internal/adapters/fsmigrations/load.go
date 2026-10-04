@@ -22,11 +22,13 @@ var (
 // Source implements app.MigrationSource on the file system. Relative
 // migration directories are resolved against Root (the project root).
 type Source struct {
-	Root string
+	Root    string
+	drivers []string
 }
 
-// New returns a Source rooted at the project directory.
-func New(root string) *Source { return &Source{Root: root} }
+// New returns a Source rooted at the project directory. drivers are the
+// database drivers migrations may target in "-- +godwit driver:" directives.
+func New(root string, drivers []string) *Source { return &Source{Root: root, drivers: drivers} }
 
 // Resolve returns dir as an absolute path.
 func (s *Source) Resolve(dir string) string {
@@ -74,7 +76,7 @@ func (s *Source) Load(dir string) ([]*domain.Migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		parsed, err := Parse(string(raw))
+		parsed, err := Parse(string(raw), s.drivers)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e.Name(), err)
 		}

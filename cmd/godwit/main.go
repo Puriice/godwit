@@ -48,7 +48,8 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	svc, err := app.New(filestore.New(root), fsmigrations.New(root), sqldb.NewFactory())
+	dbs := sqldb.NewFactory()
+	svc, err := app.New(filestore.New(root), fsmigrations.New(root, dbs.Drivers()), dbs)
 	if err != nil {
 		fatal(err)
 	}

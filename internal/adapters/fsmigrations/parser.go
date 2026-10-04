@@ -5,6 +5,7 @@ package fsmigrations
 import (
 	"bufio"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/puriice/godwit/internal/domain"
@@ -33,8 +34,10 @@ const (
 	secDown
 )
 
-// Parse reads a migration file's contents.
-func Parse(src string) (*Parsed, error) {
+// Parse reads a migration file's contents. drivers lists the driver names a
+// "driver:" directive may use (besides "all"); anything else is an error, so a
+// typo cannot silently make statements run nowhere.
+func Parse(src string, drivers []string) (*Parsed, error) {
 	p := &Parsed{}
 	var (
 		sec     = secNone
@@ -123,6 +126,13 @@ func Parse(src string) (*Parsed, error) {
 				// A blank driver ("-- +godwit driver:") means no restriction.
 				if val == "" {
 					val = driverAll
+				}
+				if val != driverAll {
+					val = domain.NormalizeDriver(val) // postgresql -> postgres, ...
+					if !slices.Contains(drivers, val) {
+						return nil, fmt.Errorf("line %d: unknown driver %q (available: %s)",
+							lineNum, val, strings.Join(append([]string{driverAll}, drivers...), ", "))
+					}
 				}
 				driver = val
 			default:

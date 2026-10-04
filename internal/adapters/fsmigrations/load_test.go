@@ -3,6 +3,7 @@ package fsmigrations
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/puriice/godwit/internal/app"
@@ -23,7 +24,7 @@ func TestLoadAndCreate(t *testing.T) {
 	write("0001_a.sql", "-- +godwit Up\nSELECT 1;\n")
 	write("README.md", "ignored")
 
-	s := New(root) // relative dir resolves against Root
+	s := New(root, []string{"mysql", "postgres"}) // relative dir resolves against Root
 	ms, err := s.Load("migs")
 	if err != nil {
 		t.Fatal(err)
@@ -57,5 +58,22 @@ func TestLoadAndCreate(t *testing.T) {
 	}
 	if got := s.Resolve("x"); got != filepath.Join(root, "x") {
 		t.Errorf("Resolve = %q", got)
+	}
+}
+
+func TestLoadRejectsUnknownDriverNamingTheFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "migs")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "0001_bad.sql"), []byte("-- +godwit Up\n-- +godwit driver: postgress\nSELECT 1;\n"), 0o644)
+
+	_, err := New(root, []string{"mysql", "postgres"}).Load("migs")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"0001_bad.sql", "line 2", "postgress"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
 	}
 }
