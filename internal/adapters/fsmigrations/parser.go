@@ -117,11 +117,12 @@ func Parse(src string) (*Parsed, error) {
 				if sec == secNone {
 					return nil, fmt.Errorf("line %d: driver directive outside Up/Down", lineNum)
 				}
-				if val == "" {
-					return nil, fmt.Errorf("line %d: driver directive needs a name", lineNum)
-				}
 				if strings.TrimSpace(buf.String()) != "" {
 					return nil, fmt.Errorf("line %d: unterminated statement before driver directive", lineNum)
+				}
+				// A blank driver ("-- +godwit driver:") means no restriction.
+				if val == "" {
+					val = driverAll
 				}
 				driver = val
 			default:
