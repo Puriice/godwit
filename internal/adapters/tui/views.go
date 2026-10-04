@@ -41,15 +41,41 @@ func (m *Model) header(title string) string {
 	return b.String()
 }
 
+const (
+	helpSep        = " · "
+	targetsHelp    = "↑/↓ select · enter open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
+	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · c clear dirty · t enable/disable · r refresh · n new · esc back"
+)
+
+// wrapHelp lays out a " · "-separated shortcut list in lines no wider than
+// width, breaking only between shortcuts so none is split in half. A single
+// shortcut wider than width gets a line of its own.
+func wrapHelp(help string, width int) []string {
+	var lines []string
+	line := ""
+	for item := range strings.SplitSeq(help, helpSep) {
+		switch {
+		case line == "":
+			line = item
+		case lipgloss.Width(line)+lipgloss.Width(helpSep)+lipgloss.Width(item) <= width:
+			line += helpSep + item
+		default:
+			lines = append(lines, line)
+			line = item
+		}
+	}
+	return append(lines, line)
+}
+
 func (m *Model) footer(help string) string {
 	var b strings.Builder
 	if m.notice != "" {
 		b.WriteRune('\n')
-		b.WriteString(warnStyle.Render(m.notice))
+		b.WriteString(warnStyle.Width(max(m.width, 1)).Render(m.notice))
 		b.WriteRune('\n')
 	}
 	b.WriteRune('\n')
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(helpStyle.Render(strings.Join(wrapHelp(help, m.width), "\n")))
 	return b.String()
 }
 
@@ -117,7 +143,7 @@ func (m *Model) viewTargets() string {
 		fmt.Fprintf(&b, "    %s\n", status)
 	}
 	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
-	return b.String() + m.footer("↑/↓ select · enter open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit")
+	return b.String() + m.footer(targetsHelp)
 }
 
 func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -217,9 +243,10 @@ func (m *Model) viewMigrations() string {
 		b.WriteRune('\n')
 	}
 
-	// Window the list so the log still fits.
+	// Window the list so the log and the (possibly wrapped) footer still fit.
+	foot := m.footer(migrationsHelp)
 	logLines := min(len(st.log), 6)
-	room := max(m.height-12-logLines, 3)
+	room := max(m.height-10-logLines-lipgloss.Height(foot), 3)
 	start := 0
 	if m.mcur >= room {
 		start = m.mcur - room + 1
@@ -254,7 +281,7 @@ func (m *Model) viewMigrations() string {
 		b.WriteString(dimStyle.Render(strings.Join(st.log[len(st.log)-logLines:], "\n")))
 		b.WriteRune('\n')
 	}
-	return b.String() + m.footer("↑/↓ select · u apply all · s apply next · d roll back last · c clear dirty · t enable/disable · r refresh · n new · esc back")
+	return b.String() + foot
 }
 
 func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
