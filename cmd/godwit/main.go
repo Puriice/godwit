@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -18,14 +19,27 @@ import (
 
 const usage = `usage: godwit [command]
 
-Commands:
+Interface:
   (none)                                   open the migration TUI
   init                                     set the migrations directory and add targets
-  auth add <name> <driver> <conn string>   add a target from a connection string
+
+Targets:
+  auth add <name> <driver> <conn string>   add a target from a connection string (not recommended, use TUI instead)
   auth list                                list targets (passwords redacted)
   auth remove <name>                       remove a target and its saved password
   auth disable <name>                      temporarily skip a target
   auth enable <name>                       use a disabled target again
+
+Migrations:
+  migrate status [target...]               show migration states
+  migrate up [-n N | --to V] [target...]   apply pending migrations
+  migrate down [-n N | --to V] [target...] roll back migrations
+  migrate redo <version> [target...]       roll back and re-apply one migration
+  migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
+  migrate new <name>                       create a migration file
+
+Help:
+  help, -h, --help                         show this message
 `
 
 func main() {
@@ -35,7 +49,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth":
+	case "", "init", "auth", "migrate":
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -59,6 +73,8 @@ func main() {
 		err = tui.RunInit(svc)
 	case "auth":
 		err = cli.Auth(svc, args[1:], os.Stdout)
+	case "migrate":
+		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
 	default:
 		_, err = tea.NewProgram(tui.New(svc), tea.WithAltScreen()).Run()
 	}
