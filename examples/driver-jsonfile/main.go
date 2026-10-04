@@ -4,7 +4,7 @@
 // log, instead of being executed by a real database.
 //
 //	go build -o godwit-driver-jsonfile ./examples/driver-jsonfile
-//	godwit plugin add jsonfile ./godwit-driver-jsonfile
+//	godwit plugin add ./godwit-driver-jsonfile
 //	godwit auth add local jsonfile jsonfile://state.json
 package main
 

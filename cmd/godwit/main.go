@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,7 +34,8 @@ Targets:
   auth enable <name>                       use a disabled target again
 
 Plugins:
-  plugin add <name> <command> [args...]    add a driver for another database (see docs/plugins.md)
+  plugin install <url> [name]              build a driver plugin from a Go package and add it
+  plugin add <command> [name]              add a driver plugin you already have (see docs/plugins.md)
   plugin list                              list plugins
   plugin remove <name>                     remove a plugin
 
@@ -94,8 +96,11 @@ func main() {
 	case "auth":
 		err = cli.Auth(svc, args[1:], os.Stdout)
 	case "plugin":
-		err = cli.Plugin(svc, func(spec domain.PluginSpec) (domain.DriverInfo, error) {
-			return plugin.Probe(root, spec)
+		err = cli.Plugin(context.Background(), svc, cli.PluginOps{
+			Probe: func(spec domain.PluginSpec) (domain.DriverInfo, error) { return plugin.Probe(root, spec) },
+			Install: func(ctx context.Context, pkg string, stdout, stderr io.Writer) (string, error) {
+				return plugin.Install(ctx, root, pkg, stdout, stderr)
+			},
 		}, args[1:], os.Stdout)
 	case "migrate":
 		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)

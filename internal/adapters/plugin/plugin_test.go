@@ -19,6 +19,10 @@ const fakeEnv = "GODWIT_FAKE_PLUGIN"
 // The test binary doubles as the plugin: with fakeEnv set it speaks the
 // protocol instead of running tests, so no external tooling is needed on any OS.
 func TestMain(m *testing.M) {
+	if isFakeGo() {
+		runFakeGo()
+		return
+	}
 	if mode := os.Getenv(fakeEnv); mode != "" {
 		if mode == "pkg" {
 			runPkgPlugin()

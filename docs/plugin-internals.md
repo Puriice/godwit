@@ -16,7 +16,7 @@ plugin feature is split across the layers:
 | public | `pkg/godwit/` | The importable Go API for plugin authors: `Driver` and `Connection` interfaces plus `Serve`, which speaks the protocol. |
 | adapter | `internal/adapters/plugin/` | Process management, the wire protocol, and `app.DatabaseFactory` / `app.Database` implementations. |
 | adapter | `internal/adapters/filestore/config.go` | Persists `plugins` in `.godwit/config.json`. |
-| adapter | `internal/adapters/cli/cli.go` | `godwit plugin add/list/remove`. |
+| adapter | `internal/adapters/cli/plugin.go` | `godwit plugin add/install/list/remove`. |
 | root | `cmd/godwit/main.go` | Wires everything together. |
 
 The `plugin` adapter may import only `domain` and `app`. It cannot see `sqldb`,
@@ -171,6 +171,41 @@ once, that has to be added to `probe` first.
 - `examples/driver-jsonfile` is a real plugin built on `pkg/godwit`. CI builds it on Linux, macOS and
   Windows through `go build ./...`.
 
+## Installing plugins
+
+`godwit plugin install` is `plugin.Install` (build) followed by the same
+register step `plugin add` uses (`pluginRegister` in `cli/plugin.go`).
+
+`Install` (`adapters/plugin/install.go`):
+
+1. `installTarget` normalizes the argument: it strips `http(s)://`, defaults to
+   `@latest`, and rejects anything starting with `-`, containing whitespace, or
+   naming a local path. This is what stops a "package" like `-toolexec=...` from
+   becoming a flag to `go install`. It is the one place user text reaches a
+   command line.
+2. It requires `go` on `PATH`. godwit never downloads a toolchain.
+3. It runs `go install <target>` with `GOBIN=<root>/.godwit/plugins`, passing the
+   tool's output through, and writes a `.gitignore` (`*`) into that directory.
+4. `binaryName` predicts the executable's name the way `go install` names it
+   (the last path element, skipping a `/vN` major-version suffix), and `Install`
+   checks the file exists, which catches packages that are not `main`.
+
+The registered command is that bare name. `resolve` looks in `.godwit/plugins`
+before `PATH`, so it finds the install without storing an absolute path, and
+`config.json` stays portable between machines (each one runs its own install).
+
+`pluginRegister` then probes the plugin. The name defaults to the handshake's
+driver name, but it is only a label: `Factory` keys on the driver name, and the
+label is used by `plugin remove` and `plugin list`. It refuses a plugin whose
+driver is built in. Registering something identical to an existing entry is a
+no-op for `add` and an "Updated" message for `install`, so re-running install
+upgrades the binary in place.
+
+Tests run offline: `install_test.go` puts a copy of the test binary named `go`
+first on `PATH`. As `go install` it copies itself, a working fake plugin, to
+`$GOBIN`, so the test can install it and then probe the result. The CLI tests
+inject fake `Probe` and `Install` functions through `cli.PluginOps`.
+
 ## Known limits
 
 - Plugins are loaded at startup, so a newly added plugin needs a restart.
@@ -178,3 +213,6 @@ once, that has to be added to `probe` first.
 - There is no sandboxing, signing or capability restriction: a plugin runs with
   the user's privileges and receives the target's password in `open`.
 - One protocol version is supported at a time.
+- `install` trusts whatever `go install` fetches. There is no checksum or
+  signature check on the plugin itself, beyond what the Go module proxy and
+  `go.sum` database provide for modules.

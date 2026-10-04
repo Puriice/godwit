@@ -31,7 +31,7 @@ func (fileDriver) Open(ctx context.Context, t godwit.Target, password string) (g
 }
 
 // A plugin's main function is a single call. Build the result as
-// godwit-driver-<name> and register it with: godwit plugin add <name> <command>.
+// godwit-driver-<name> and register it with: godwit plugin add <command>.
 func ExampleServe() {
 	if err := godwit.Serve(fileDriver{}); err != nil {
 		fmt.Fprintln(os.Stderr, err)

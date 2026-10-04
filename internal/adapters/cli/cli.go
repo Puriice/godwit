@@ -9,75 +9,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/puriice/godwit/internal/app"
-	"github.com/puriice/godwit/internal/domain"
 )
-
-// Probe validates a plugin before it is saved and describes its driver.
-type Probe func(domain.PluginSpec) (domain.DriverInfo, error)
-
-// PluginUsage documents the plugin subcommands.
-const PluginUsage = `usage: godwit plugin list
-       godwit plugin add <name> <command> [args...]
-       godwit plugin remove <name>
-
-  add      register a driver plugin: an executable that speaks godwit's plugin
-           protocol (docs/plugins.md). <command> is a path relative to the
-           project, or a name found in .godwit/plugins or on PATH. The plugin is
-           started once to check it before it is saved.
-  remove   unregister a plugin (targets using its driver are left alone)
-  list     show registered plugins
-
-Plugins run with your privileges: only add executables you trust.
-`
-
-// Plugin runs "godwit plugin ...". args excludes the leading "plugin".
-func Plugin(svc *app.Service, probe Probe, args []string, out io.Writer) error {
-	if len(args) > 0 {
-		switch args[0] {
-		case "list":
-			if len(args) != 1 {
-				break
-			}
-			plugins := svc.Plugins()
-			if len(plugins) == 0 {
-				fmt.Fprintln(out, "No plugins. Add one with: godwit plugin add <name> <command>")
-				return nil
-			}
-			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			for _, p := range plugins {
-				fmt.Fprintf(w, "%s\t%s\n", p.Name, strings.TrimSpace(p.Command+" "+strings.Join(p.Args, " ")))
-			}
-			return w.Flush()
-		case "add":
-			if len(args) < 3 {
-				break
-			}
-			spec := domain.PluginSpec{Name: args[1], Command: args[2], Args: args[3:]}
-			info, err := probe(spec)
-			if err != nil {
-				return err
-			}
-			if !strings.EqualFold(info.Name, strings.TrimSpace(spec.Name)) {
-				return fmt.Errorf("plugin provides driver %q, not %q; use that name", info.Name, spec.Name)
-			}
-			if err := svc.AddPlugin(spec); err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "Added plugin %q (driver %s). Restart godwit to use it.\n", spec.Name, info.Name)
-			return nil
-		case "remove":
-			if len(args) != 2 {
-				break
-			}
-			if err := svc.RemovePlugin(args[1]); err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "Removed plugin %q.\n", args[1])
-			return nil
-		}
-	}
-	return errors.New("unknown plugin command\n\n" + PluginUsage)
-}
 
 // AuthUsage documents the auth subcommands.
 const AuthUsage = `usage: godwit auth list

@@ -3,7 +3,9 @@
 // A plugin is an executable that godwit starts and talks to over stdin and
 // stdout (see docs/plugins.md for the wire protocol). This package hides the
 // protocol: implement Driver and Connection for your database and call Serve
-// from main.
+// from main. Users add the built plugin with "godwit plugin add <command>", or
+// install it straight from your repository with "godwit plugin install <url>"
+// if it is a main package that "go install" can build.
 //
 //	func main() {
 //		if err := godwit.Serve(myDriver{}); err != nil {

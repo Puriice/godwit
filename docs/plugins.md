@@ -45,11 +45,32 @@ write a plugin in another language or want to know what `Serve` does.
 
 ## Installing
 
+Two commands register a plugin. Both start it once to check it before saving.
+
 ```
-godwit plugin add <name> <command> [args...]
+godwit plugin install <url> [name] [-- args...]   # build from a Go package, then add
+godwit plugin add <command> [name] [-- args...]   # add an executable you already have
 ```
 
-`<name>` must equal the driver name the plugin reports in its handshake.
+**`install`** runs `go install <url>` with `GOBIN` set to
+`<project>/.godwit/plugins/`, then registers the result. `<url>` is a Go package
+path to a `main` package, optionally with a version, for example
+`github.com/you/godwit-driver-sqlite@v1.2.0`. Without a version it installs
+`@latest`. It needs the Go toolchain on `PATH`. Running it again updates the
+plugin. The directory gets a `.gitignore` so the binaries are not committed.
+
+**`add`** takes a command that already exists, for plugins written in other
+languages or built some other way.
+
+`name` is what the plugin is called in `plugin list` and `plugin remove`. It is
+optional and defaults to the driver name the plugin reports in its handshake. If
+you give one, it may differ from the driver name; targets always use the driver
+name. Anything after `--` is passed to the plugin as command-line arguments.
+
+`go install` compiles code from the network and godwit then runs it, with your
+privileges, so only install plugins you trust. godwit does not verify
+signatures; pin a version (`@v1.2.0`) for repeatable installs.
+
 `<command>` is resolved as follows:
 
 - If it contains a path separator, it is a path, relative to the project root

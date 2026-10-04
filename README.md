@@ -92,7 +92,8 @@ Targets:
   auth enable <name>                       use a disabled target again
 
 Plugins:
-  plugin add <name> <command> [args...]    add a driver for another database
+  plugin install <url> [name]              build a driver plugin from a Go package and add it
+  plugin add <command> [name]              add a driver plugin you already have
   plugin list                              list plugins
   plugin remove <name>                     remove a plugin
 
@@ -124,13 +125,16 @@ stdout (JSON lines). It can be written in any language and works the same on
 Windows, macOS and Linux, with no rebuild of godwit.
 
 ```
-godwit plugin add sqlite godwit-driver-sqlite     # looks in .godwit/plugins, then PATH
-godwit plugin add sqlite ./bin/godwit-driver-sqlite
-godwit auth add local sqlite 'sqlite://app.db'    # the plugin defines the syntax
+godwit plugin install github.com/you/godwit-driver-sqlite   # go install into .godwit/plugins
+godwit plugin add ./bin/godwit-driver-sqlite                # or use an executable you have
+godwit auth add local sqlite 'sqlite://app.db'              # the plugin defines the syntax
 ```
 
-`plugin add` starts the plugin once to check it, then records it in
-`.godwit/config.json`. Plugin drivers appear in the TUI and can be used in
+`plugin install` builds a Go plugin with `go install` (needs the Go toolchain;
+add `@version` to pin one) and `plugin add` takes any executable. Both start the
+plugin once to check it, then record it in `.godwit/config.json`. The plugin's
+name defaults to the driver name it reports; pass one as the last argument to
+choose your own. Plugin drivers appear in the TUI and can be used in
 `-- +godwit driver: <name>` directives like the built-in ones. Plugins run with
 your privileges, so only add executables you trust. To write one, see
 [docs/plugins.md](docs/plugins.md). Go authors can import
