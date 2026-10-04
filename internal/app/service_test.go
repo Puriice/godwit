@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +240,98 @@ func TestDown(t *testing.T) {
 	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g"}
 	if _, err := h.svc.Down(context.Background(), "t", 0, nil); err == nil {
 		t.Error("expected error reverting migration with no file")
+	}
+}
+
+func TestRedo(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
+	h.svc.Up(ctx, "t", 0, nil)
+	// Migration 2's file was edited after it was applied.
+	h.db.recs[2].Checksum = "old"
+	h.db.recs[2].AppliedAt = time.Time{}
+
+	var evs []domain.Event
+	if err := h.svc.Redo(ctx, "t", 2, func(e domain.Event) { evs = append(evs, e) }); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reverts then applies, for that migration only; the others are untouched.
+	wantEvents := []struct {
+		dir   domain.Direction
+		phase domain.Phase
+	}{{domain.Down, domain.Started}, {domain.Down, domain.Done}, {domain.Up, domain.Started}, {domain.Up, domain.Done}}
+	if len(evs) != len(wantEvents) {
+		t.Fatalf("events = %+v", evs)
+	}
+	for i, w := range wantEvents {
+		if evs[i].Direction != w.dir || evs[i].Phase != w.phase || evs[i].Version != 2 {
+			t.Errorf("event %d = %+v, want %v/%v for version 2", i, evs[i], w.dir, w.phase)
+		}
+	}
+	if len(h.db.reverted) != 1 || h.db.reverted[0] != 2 {
+		t.Errorf("reverted = %v, want only [2]", h.db.reverted)
+	}
+	if r := h.db.recs[2]; r.Checksum != "b" || r.AppliedAt.IsZero() {
+		t.Errorf("record not refreshed: %+v", r)
+	}
+	if len(h.db.recs) != 3 || h.db.locked || h.db.closed != 2 {
+		t.Errorf("recs=%d locked=%v closed=%d", len(h.db.recs), h.db.locked, h.db.closed)
+	}
+	if items, _ := h.svc.Status(ctx, "t"); items[1].State != domain.Applied {
+		t.Errorf("state after redo = %s, want applied", items[1].State)
+	}
+}
+
+func TestRedoRefusals(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"))
+	h.svc.Up(ctx, "t", 1, nil) // 1 applied, 2 pending
+	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g"}
+
+	cases := map[string]int64{"pending": 2, "no such version": 42, "file missing": 9}
+	for name, v := range cases {
+		reverted := len(h.db.reverted)
+		if err := h.svc.Redo(ctx, "t", v, nil); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+		if len(h.db.reverted) != reverted || h.db.locked {
+			t.Errorf("%s: touched the database or leaked the lock", name)
+		}
+	}
+
+	// A dirty migration blocks redo until it is repaired.
+	h.db.recs[1].Dirty = true
+	if err := h.svc.Redo(ctx, "t", 1, nil); err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Errorf("dirty: err = %v", err)
+	}
+	h.db.recs[1].Dirty = false
+
+	if err := h.svc.Redo(ctx, "nope", 1, nil); err == nil {
+		t.Error("unknown target: expected error")
+	}
+	h.svc.SetTargetEnabled("t", false)
+	if err := h.svc.Redo(ctx, "t", 1, nil); !errors.Is(err, ErrTargetDisabled) {
+		t.Errorf("disabled: err = %v", err)
+	}
+}
+
+func TestRedoReapplyFailureIsReported(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"))
+	h.svc.Up(ctx, "t", 0, nil)
+	h.db.failOn = 1 // the re-apply will fail
+
+	var last domain.Event
+	err := h.svc.Redo(ctx, "t", 1, func(e domain.Event) { last = e })
+	if err == nil || !strings.Contains(err.Error(), "now reverted") {
+		t.Fatalf("err = %v; it should say the migration was left reverted", err)
+	}
+	if last.Direction != domain.Up || last.Phase != domain.Failed || last.Err == nil {
+		t.Errorf("last event = %+v", last)
+	}
+	if len(h.db.reverted) != 1 || h.db.locked {
+		t.Errorf("reverted=%v locked=%v", h.db.reverted, h.db.locked)
 	}
 }
 

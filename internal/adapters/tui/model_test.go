@@ -187,3 +187,75 @@ func TestRunMessagesUpdateState(t *testing.T) {
 		t.Error("error not shown in targets view")
 	}
 }
+
+func TestRedoSelectedMigration(t *testing.T) {
+	m := testModel(t)
+	a, _ := m.svc.Target("a")
+	st := m.state("a")
+	rec := &domain.Record{}
+	st.loaded = true
+	st.items = []domain.Item{
+		{Version: 1, Name: "users", State: domain.Applied, Record: rec},
+		{Version: 2, Name: "posts", State: domain.Modified, Record: rec},
+		{Version: 3, Name: "tags", State: domain.Pending},
+		{Version: 4, Name: "broken", State: domain.Dirty, Record: rec},
+		{Version: 5, Name: "ghost", State: domain.Missing, Record: rec},
+	}
+	m.screen = scrMigrations // target "a" is selected
+
+	// Pending, dirty and missing migrations cannot be redone; the reason is shown.
+	for cursor, want := range map[int]string{2: "not applied yet", 3: "dirty", 4: "no migration file"} {
+		m.mcur, m.notice = cursor, ""
+		m.Update(key("R"))
+		if m.screen != scrMigrations || !strings.Contains(m.notice, want) {
+			t.Errorf("cursor %d: screen=%v notice=%q, want notice containing %q", cursor, m.screen, m.notice, want)
+		}
+	}
+
+	// An applied migration asks for confirmation first, and warns about later ones.
+	m.mcur = 0
+	m.Update(key("R"))
+	if m.screen != scrForm || m.formTitle != "Confirm" {
+		t.Fatalf("expected a confirm form, screen=%v title=%q", m.screen, m.formTitle)
+	}
+	if st.running {
+		t.Error("nothing may run before the user confirms")
+	}
+	m.Update(key("esc")) // cancel
+	if m.screen != scrMigrations || st.running {
+		t.Errorf("cancel: screen=%v running=%v", m.screen, st.running)
+	}
+	// The warning counts the later applied migrations (2, 4 and 5; not pending 3).
+	if got := m.confirmRedo(a, st); got == nil {
+		t.Fatal("expected the confirm form command")
+	}
+	if !strings.Contains(m.View(), "3 later applied") {
+		t.Errorf("confirm text missing the later-migrations warning:\n%s", m.View())
+	}
+	m.Update(key("esc"))
+
+	// Redo is a background run reported as a single "redone" migration.
+	cmd := m.redo(a, 1)
+	if cmd == nil || !st.running {
+		t.Fatal("redo should start a background run")
+	}
+	done, ok := cmd().(runDoneMsg) // fake DB factory fails; first message is the result
+	if !ok || done.dir != domain.Redo || done.err == nil {
+		t.Fatalf("done = %+v", done)
+	}
+	if doneWord(domain.Redo) != "redone" {
+		t.Errorf("doneWord(Redo) = %q", doneWord(domain.Redo))
+	}
+	m.Update(done)
+	if st.running || st.runErr == nil {
+		t.Errorf("running=%v runErr=%v", st.running, st.runErr)
+	}
+
+	// A disabled target ignores R, like the other action keys.
+	m.svc.SetTargetEnabled("a", false)
+	m.mcur, m.notice = 0, ""
+	m.Update(key("R"))
+	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
+		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
+	}
+}

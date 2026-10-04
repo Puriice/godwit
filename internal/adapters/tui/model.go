@@ -189,7 +189,32 @@ func (m *Model) toggleTarget(t domain.Target) tea.Cmd {
 	return nil
 }
 
+// run applies (Up) or reverts (Down) n migrations on one target.
 func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, dir, func(ctx context.Context, prog app.Progress) (int, error) {
+		if dir == domain.Up {
+			return svc.Up(ctx, t.Name, n, prog)
+		}
+		return svc.Down(ctx, t.Name, n, prog)
+	})
+}
+
+// redo reverts one applied migration and applies it again.
+func (m *Model) redo(t domain.Target, version int64) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, domain.Redo, func(ctx context.Context, prog app.Progress) (int, error) {
+		if err := svc.Redo(ctx, t.Name, version, prog); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	})
+}
+
+// startRun runs work in the background, streaming its progress events and a
+// final runDoneMsg back as messages. It does nothing for a target that is
+// disabled, already running, or missing its password.
+func (m *Model) startRun(t domain.Target, dir domain.Direction, work func(context.Context, app.Progress) (int, error)) tea.Cmd {
 	st := m.state(t.Name)
 	if st.running || t.Disabled {
 		return nil
@@ -202,22 +227,12 @@ func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
 	st.log = append(st.log, fmt.Sprintf("— %s —", dir))
 	ch := make(chan tea.Msg, 64)
 	st.events = ch
-	svc := m.svc
 
 	go func() {
 		defer close(ch)
-		ctx := context.Background()
 		prog := func(e domain.Event) { ch <- progressMsg{target: t.Name, ev: e} }
-		var (
-			cnt int
-			err error
-		)
-		if dir == domain.Up {
-			cnt, err = svc.Up(ctx, t.Name, n, prog)
-		} else {
-			cnt, err = svc.Down(ctx, t.Name, n, prog)
-		}
-		ch <- runDoneMsg{target: t.Name, dir: dir, n: cnt, err: err}
+		n, err := work(context.Background(), prog)
+		ch <- runDoneMsg{target: t.Name, dir: dir, n: n, err: err}
 	}()
 	return waitMsg(ch)
 }
@@ -321,8 +336,11 @@ func formatEvent(e domain.Event) string {
 }
 
 func doneWord(d domain.Direction) string {
-	if d == domain.Up {
+	switch d {
+	case domain.Up:
 		return "applied"
+	case domain.Redo:
+		return "redone"
 	}
 	return "reverted"
 }

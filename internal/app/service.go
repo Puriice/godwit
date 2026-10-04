@@ -413,6 +413,61 @@ func (s *Service) Down(ctx context.Context, target string, n int, prog Progress)
 	return reverted, nil
 }
 
+// Redo reverts one applied migration and applies it again, e.g. to pick up an
+// edited file. The migration must be applied (or modified) on the target and
+// its file must still exist. Later migrations are left alone, so if they
+// depend on this one the revert may fail.
+//
+// If the revert succeeds but the re-apply fails, the migration is left
+// reverted (pending, or dirty on engines without transactional DDL) and the
+// error says so.
+func (s *Service) Redo(ctx context.Context, target string, version int64, prog Progress) (err error) {
+	db, items, release, err := s.lockedStatus(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rerr := release(); err == nil {
+			err = rerr
+		}
+	}()
+
+	var it *domain.Item
+	for i := range items {
+		if items[i].Version == version {
+			it = &items[i]
+		}
+	}
+	switch {
+	case it == nil:
+		return fmt.Errorf("no migration with version %d", version)
+	case it.Migration == nil:
+		return fmt.Errorf("cannot redo %d_%s: migration file is missing", it.Version, it.Name)
+	case it.Record == nil:
+		return fmt.Errorf("%d_%s has not been applied on %s; apply it instead", it.Version, it.Name, target)
+	}
+
+	step := func(dir domain.Direction, do func(context.Context, *domain.Migration) error) error {
+		ev := domain.Event{Direction: dir, Version: it.Version, Name: it.Name, Phase: domain.Started}
+		prog.emit(ev)
+		if err := do(ctx, it.Migration); err != nil {
+			ev.Phase, ev.Err = domain.Failed, err
+			prog.emit(ev)
+			return err
+		}
+		ev.Phase = domain.Done
+		prog.emit(ev)
+		return nil
+	}
+	if err := step(domain.Down, db.Revert); err != nil {
+		return fmt.Errorf("%d_%s: revert failed: %w", it.Version, it.Name, err)
+	}
+	if err := step(domain.Up, db.Apply); err != nil {
+		return fmt.Errorf("%d_%s: re-apply failed after the revert, so the migration is now reverted: %w", it.Version, it.Name, err)
+	}
+	return nil
+}
+
 // ClearDirty clears a dirty flag after the user repaired the target by hand.
 func (s *Service) ClearDirty(ctx context.Context, target string, version int64) error {
 	db, _, err := s.open(ctx, target)

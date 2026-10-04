@@ -68,11 +68,11 @@ func Parse(src string, drivers []string) (*Parsed, error) {
 		line := sc.Text()
 		trimmed := strings.TrimSpace(line)
 
-		if strings.HasPrefix(trimmed, prefix) {
-			if block && !strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), "StatementEnd") {
+		if rest, ok := strings.CutPrefix(trimmed, prefix); ok {
+			d := strings.TrimSpace(rest)
+			if block && !strings.EqualFold(d, "StatementEnd") {
 				return nil, fmt.Errorf("line %d: directive inside StatementBegin block", lineNum)
 			}
-			d := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 			// Drop trailing comment, e.g. "driver: all -- default".
 			if i := strings.Index(d, "--"); i >= 0 {
 				d = strings.TrimSpace(d[:i])

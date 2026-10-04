@@ -44,7 +44,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "↑/↓ select · enter open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
-	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · c clear dirty · t enable/disable · r refresh · n new · esc back"
+	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -293,7 +293,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "u", "s", "d", "c", "r":
+		case "u", "s", "d", "R", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -319,6 +319,8 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
 			return m.run(t, domain.Down, 1)
 		})
+	case "R":
+		return m, m.confirmRedo(t, st)
 	case "c":
 		if m.mcur < len(st.items) && st.items[m.mcur].State == domain.Dirty {
 			it := st.items[m.mcur]
@@ -334,6 +336,38 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openNewMigrationForm()
 	}
 	return m, nil
+}
+
+// confirmRedo checks the selected migration can be redone and asks first: it
+// runs the migration's Down and then its Up, which can destroy data.
+func (m *Model) confirmRedo(t domain.Target, st *targetState) tea.Cmd {
+	if m.mcur >= len(st.items) {
+		return nil
+	}
+	it := st.items[m.mcur]
+	label := fmt.Sprintf("%d_%s", it.Version, it.Name)
+	switch it.State {
+	case domain.Pending:
+		m.notice = label + " is not applied yet; use u or s to apply it"
+		return nil
+	case domain.Dirty:
+		m.notice = label + " is dirty; repair the target and clear the flag (c) first"
+		return nil
+	case domain.Missing:
+		m.notice = label + " has no migration file, so it cannot be redone"
+		return nil
+	}
+	later := 0
+	for _, x := range st.items[m.mcur+1:] {
+		if x.Record != nil {
+			later++
+		}
+	}
+	q := fmt.Sprintf("Redo %s on %s? This runs its Down, then its Up, and may destroy data.", label, t.Name)
+	if later > 0 {
+		q += fmt.Sprintf(" %d later applied migration(s) are left as they are and may depend on it.", later)
+	}
+	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.redo(t, it.Version) })
 }
 
 func (m *Model) clearDirty(t domain.Target, version int64) tea.Cmd {

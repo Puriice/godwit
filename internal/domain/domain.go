@@ -109,6 +109,9 @@ type Direction string
 const (
 	Up   Direction = "up"
 	Down Direction = "down"
+	// Redo is a run that reverts one migration and applies it again; its
+	// progress events are reported as Down followed by Up.
+	Redo Direction = "redo"
 )
 
 // Phase of a single migration within a run.
