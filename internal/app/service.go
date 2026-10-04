@@ -335,9 +335,14 @@ func (s *Service) lockedStatus(ctx context.Context, target string) (db Database,
 	return db, items, release, nil
 }
 
-// Up applies pending migrations in version order. limit <= 0 applies all of
-// them. It returns how many were applied.
-func (s *Service) Up(ctx context.Context, target string, limit int, prog Progress) (applied int, err error) {
+// picker chooses, from a target's status, which migrations a run executes and
+// in what order. It runs after the target is locked, so it sees a stable view.
+type picker func(items []domain.Item) ([]domain.Item, error)
+
+// execute opens the target, locks it, and runs the migrations chosen by pick
+// in the given direction. It returns how many completed. A run stops at the
+// first failure.
+func (s *Service) execute(ctx context.Context, target string, dir domain.Direction, prog Progress, pick picker) (done int, err error) {
 	db, items, release, err := s.lockedStatus(ctx, target)
 	if err != nil {
 		return 0, err
@@ -348,69 +353,142 @@ func (s *Service) Up(ctx context.Context, target string, limit int, prog Progres
 		}
 	}()
 
-	for _, it := range items {
-		if it.State != domain.Pending {
-			continue
+	todo, err := pick(items)
+	if err != nil {
+		return 0, err
+	}
+	if dir == domain.Down { // fail before reverting anything, not half-way through
+		for _, it := range todo {
+			if it.Migration == nil {
+				return 0, fmt.Errorf("cannot revert %d_%s: migration file is missing", it.Version, it.Name)
+			}
 		}
-		if limit > 0 && applied >= limit {
-			break
-		}
+	}
+
+	for _, it := range todo {
 		if err := ctx.Err(); err != nil {
-			return applied, err
+			return done, err
 		}
-		ev := domain.Event{Direction: domain.Up, Version: it.Version, Name: it.Name, Phase: domain.Started}
+		ev := domain.Event{Direction: dir, Version: it.Version, Name: it.Name, Phase: domain.Started}
 		prog.emit(ev)
-		if err := db.Apply(ctx, it.Migration); err != nil {
+		if dir == domain.Up {
+			err = db.Apply(ctx, it.Migration)
+		} else {
+			err = db.Revert(ctx, it.Migration)
+		}
+		if err != nil {
 			ev.Phase, ev.Err = domain.Failed, err
 			prog.emit(ev)
-			return applied, fmt.Errorf("%d_%s: %w", it.Version, it.Name, err)
+			return done, fmt.Errorf("%d_%s: %w", it.Version, it.Name, err)
 		}
-		applied++
+		done++
 		ev.Phase = domain.Done
 		prog.emit(ev)
 	}
-	return applied, nil
+	return done, nil
+}
+
+// pendingItems returns the pending items, which are in version order.
+func pendingItems(items []domain.Item) []domain.Item {
+	var out []domain.Item
+	for _, it := range items {
+		if it.State == domain.Pending {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// appliedNewestFirst returns the items recorded on the target, highest version first.
+func appliedNewestFirst(items []domain.Item) []domain.Item {
+	var out []domain.Item
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Record != nil {
+			out = append(out, items[i])
+		}
+	}
+	return out
+}
+
+func findItem(items []domain.Item, version int64) (domain.Item, error) {
+	for _, it := range items {
+		if it.Version == version {
+			return it, nil
+		}
+	}
+	return domain.Item{}, fmt.Errorf("no migration with version %d", version)
+}
+
+// Up applies pending migrations in version order. limit <= 0 applies all of
+// them. It returns how many were applied.
+func (s *Service) Up(ctx context.Context, target string, limit int, prog Progress) (int, error) {
+	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+		todo := pendingItems(items)
+		if limit > 0 && len(todo) > limit {
+			todo = todo[:limit]
+		}
+		return todo, nil
+	})
 }
 
 // Down reverts the n most recently applied migrations (n <= 0 means 1). It
 // returns how many were reverted.
-func (s *Service) Down(ctx context.Context, target string, n int, prog Progress) (reverted int, err error) {
+func (s *Service) Down(ctx context.Context, target string, n int, prog Progress) (int, error) {
 	if n <= 0 {
 		n = 1
 	}
-	db, items, release, err := s.lockedStatus(ctx, target)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if rerr := release(); err == nil {
-			err = rerr
+	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+		todo := appliedNewestFirst(items)
+		if len(todo) > n {
+			todo = todo[:n]
 		}
-	}()
+		return todo, nil
+	})
+}
 
-	for i := len(items) - 1; i >= 0 && reverted < n; i-- {
-		it := items[i]
-		if it.Record == nil { // pending, nothing to revert
-			continue
+// UpTo applies every pending migration up to and including version, in
+// version order. The migration must exist and be pending. Pending migrations
+// with a higher version are left alone.
+func (s *Service) UpTo(ctx context.Context, target string, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+		sel, err := findItem(items, version)
+		if err != nil {
+			return nil, err
 		}
-		if it.Migration == nil {
-			return reverted, fmt.Errorf("cannot revert %d_%s: migration file is missing", it.Version, it.Name)
+		if sel.State != domain.Pending {
+			return nil, fmt.Errorf("%d_%s is already %s; nothing to apply up to it", sel.Version, sel.Name, sel.State)
 		}
-		if err := ctx.Err(); err != nil {
-			return reverted, err
+		var todo []domain.Item
+		for _, it := range pendingItems(items) {
+			if it.Version <= version {
+				todo = append(todo, it)
+			}
 		}
-		ev := domain.Event{Direction: domain.Down, Version: it.Version, Name: it.Name, Phase: domain.Started}
-		prog.emit(ev)
-		if err := db.Revert(ctx, it.Migration); err != nil {
-			ev.Phase, ev.Err = domain.Failed, err
-			prog.emit(ev)
-			return reverted, fmt.Errorf("%d_%s: %w", it.Version, it.Name, err)
+		return todo, nil
+	})
+}
+
+// DownTo reverts every applied migration newer than version, newest first, so
+// that version becomes the most recently applied migration. The migration
+// itself stays applied. It must exist and be applied; if it already is the
+// newest, nothing is reverted.
+func (s *Service) DownTo(ctx context.Context, target string, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+		sel, err := findItem(items, version)
+		if err != nil {
+			return nil, err
 		}
-		reverted++
-		ev.Phase = domain.Done
-		prog.emit(ev)
-	}
-	return reverted, nil
+		if sel.Record == nil {
+			return nil, fmt.Errorf("%d_%s is not applied on %s; nothing to roll back down to", sel.Version, sel.Name, target)
+		}
+		var todo []domain.Item
+		for _, it := range appliedNewestFirst(items) {
+			if it.Version > version {
+				todo = append(todo, it)
+			}
+		}
+		return todo, nil
+	})
 }
 
 // Redo reverts one applied migration and applies it again, e.g. to pick up an

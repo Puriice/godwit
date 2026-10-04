@@ -259,3 +259,99 @@ func TestRedoSelectedMigration(t *testing.T) {
 		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
 	}
 }
+
+func TestGoToSelectedMigration(t *testing.T) {
+	m := testModel(t)
+	a, _ := m.svc.Target("a")
+	st := m.state("a")
+	rec := &domain.Record{}
+	st.loaded = true
+	st.items = []domain.Item{
+		{Version: 1, Name: "users", State: domain.Applied, Record: rec},
+		{Version: 2, Name: "posts", State: domain.Applied, Record: rec},
+		{Version: 3, Name: "tags", State: domain.Modified, Record: rec},
+		{Version: 4, Name: "comments", State: domain.Pending},
+		{Version: 5, Name: "indexes", State: domain.Pending},
+		{Version: 6, Name: "broken", State: domain.Dirty, Record: rec},
+		{Version: 7, Name: "ghost", State: domain.Missing, Record: rec},
+	}
+	m.screen = scrMigrations // target "a" is selected
+	press := func(cursor int) {
+		m.mcur, m.notice = cursor, ""
+		m.Update(key("enter"))
+	}
+
+	// Applied (or modified) and not the newest: asks before rolling back, and says how many.
+	press(0)
+	if m.screen != scrForm || m.formTitle != "Confirm" || st.running {
+		t.Fatalf("expected a confirm form: screen=%v title=%q running=%v", m.screen, m.formTitle, st.running)
+	}
+	// 2, 3, 6 and 7 are applied and newer than 1; pending 4 and 5 are not counted.
+	if !strings.Contains(m.View(), "Roll back 4 migration(s)") || !strings.Contains(m.View(), "1_users is the latest applied") {
+		t.Errorf("confirm text:\n%s", m.View())
+	}
+	m.Update(key("esc"))
+	if m.screen != scrMigrations || st.running {
+		t.Errorf("cancel: screen=%v running=%v", m.screen, st.running)
+	}
+
+	// Already the latest applied (nothing newer applied): nothing to do.
+	st.items = st.items[:3]
+	press(2)
+	if m.screen != scrMigrations || st.running || !strings.Contains(m.notice, "already the latest") {
+		t.Errorf("latest: screen=%v running=%v notice=%q", m.screen, st.running, m.notice)
+	}
+	st.items = append(st.items,
+		domain.Item{Version: 4, Name: "comments", State: domain.Pending},
+		domain.Item{Version: 6, Name: "broken", State: domain.Dirty, Record: rec},
+		domain.Item{Version: 7, Name: "ghost", State: domain.Missing, Record: rec})
+
+	// Dirty and missing migrations cannot be used as a target.
+	press(4)
+	if !strings.Contains(m.notice, "dirty") || m.screen != scrMigrations {
+		t.Errorf("dirty: screen=%v notice=%q", m.screen, m.notice)
+	}
+	press(5)
+	if !strings.Contains(m.notice, "no migration file") || m.screen != scrMigrations {
+		t.Errorf("missing: screen=%v notice=%q", m.screen, m.notice)
+	}
+
+	// Pending: asks first too (Enter is easy to hit), saying how many it will apply.
+	press(3)
+	if m.screen != scrForm || m.formTitle != "Confirm" || st.running {
+		t.Fatalf("pending: expected a confirm form, screen=%v title=%q running=%v", m.screen, m.formTitle, st.running)
+	}
+	if !strings.Contains(m.View(), "Apply 1 pending migration(s)") || !strings.Contains(m.View(), "4_comments") {
+		t.Errorf("confirm text:\n%s", m.View())
+	}
+	m.Update(key("esc"))
+	if m.screen != scrMigrations || st.running {
+		t.Errorf("cancel: screen=%v running=%v", m.screen, st.running)
+	}
+	// Confirming starts an "up to" background run.
+	cmd := m.upTo(a, 4)
+	if cmd == nil || !st.running {
+		t.Fatal("upTo should start a background run")
+	}
+	done, ok := cmd().(runDoneMsg) // the fake database factory fails right away
+	if !ok || done.dir != domain.Up || done.err == nil {
+		t.Fatalf("done = %+v", done)
+	}
+	m.Update(done)
+
+	// downTo is also a background "down" run.
+	if cmd := m.downTo(a, 1); cmd == nil || !st.running {
+		t.Fatal("downTo should start a background run")
+	} else if d, ok := cmd().(runDoneMsg); !ok || d.dir != domain.Down {
+		t.Errorf("downTo done = %+v", d)
+	} else {
+		m.Update(d)
+	}
+
+	// A disabled target ignores g like the other action keys.
+	m.svc.SetTargetEnabled("a", false)
+	press(0)
+	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
+		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
+	}
+}

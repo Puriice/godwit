@@ -243,6 +243,96 @@ func TestDown(t *testing.T) {
 	}
 }
 
+func TestUpTo(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"), mig(4, "d"))
+	var evs []domain.Event
+
+	// Applies 1..3 inclusive, in order, and leaves 4 pending.
+	n, err := h.svc.UpTo(ctx, "t", 3, func(e domain.Event) { evs = append(evs, e) })
+	if err != nil || n != 3 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if len(h.db.recs) != 3 || h.db.recs[4] != nil {
+		t.Errorf("applied = %v", h.db.recs)
+	}
+	if len(evs) != 6 || evs[0].Version != 1 || evs[4].Version != 3 || evs[5].Phase != domain.Done {
+		t.Errorf("events = %+v", evs)
+	}
+	if h.db.locked || h.db.closed != 1 {
+		t.Errorf("locked=%v closed=%d", h.db.locked, h.db.closed)
+	}
+
+	// Only what is still pending up to the target is applied.
+	h2 := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
+	h2.svc.Up(ctx, "t", 1, nil)
+	if n, err := h2.svc.UpTo(ctx, "t", 2, nil); err != nil || n != 1 {
+		t.Errorf("second run: n=%d err=%v", n, err)
+	}
+
+	// Errors: already applied, unknown version, and a failing migration stops the run.
+	if _, err := h.svc.UpTo(ctx, "t", 2, nil); err == nil || !strings.Contains(err.Error(), "already") {
+		t.Errorf("already applied: err = %v", err)
+	}
+	if _, err := h.svc.UpTo(ctx, "t", 99, nil); err == nil {
+		t.Error("unknown version: expected error")
+	}
+	h3 := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
+	h3.db.failOn = 2
+	if n, err := h3.svc.UpTo(ctx, "t", 3, nil); err == nil || n != 1 {
+		t.Errorf("failure: n=%d err=%v", n, err)
+	}
+	if h3.db.recs[3] != nil {
+		t.Error("migrations after the failure must not run")
+	}
+}
+
+func TestDownTo(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"), mig(4, "d"))
+	h.svc.Up(ctx, "t", 0, nil)
+	var evs []domain.Event
+
+	// Reverts 4 then 3, newest first; 2 becomes the latest and stays applied.
+	n, err := h.svc.DownTo(ctx, "t", 2, func(e domain.Event) { evs = append(evs, e) })
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if len(h.db.reverted) != 2 || h.db.reverted[0] != 4 || h.db.reverted[1] != 3 {
+		t.Errorf("reverted = %v, want [4 3]", h.db.reverted)
+	}
+	if h.db.recs[2] == nil || h.db.recs[1] == nil || len(h.db.recs) != 2 {
+		t.Errorf("recs = %v", h.db.recs)
+	}
+	if len(evs) != 4 || evs[0].Direction != domain.Down || evs[0].Version != 4 {
+		t.Errorf("events = %+v", evs)
+	}
+
+	// Already the latest: nothing to do, not an error.
+	if n, err := h.svc.DownTo(ctx, "t", 2, nil); err != nil || n != 0 {
+		t.Errorf("already latest: n=%d err=%v", n, err)
+	}
+	// Errors: pending target, unknown version.
+	if _, err := h.svc.DownTo(ctx, "t", 3, nil); err == nil || !strings.Contains(err.Error(), "not applied") {
+		t.Errorf("pending: err = %v", err)
+	}
+	if _, err := h.svc.DownTo(ctx, "t", 99, nil); err == nil {
+		t.Error("unknown version: expected error")
+	}
+
+	// A missing file anywhere in the range aborts before anything is reverted.
+	h2 := newHarness(t, mig(1, "a"), mig(2, "b"))
+	h2.svc.Up(ctx, "t", 0, nil)
+	h2.db.recs[3] = &domain.Record{Version: 3, Name: "ghost", Checksum: "g"} // newest, no file
+	h2.db.recs[4] = &domain.Record{Version: 4, Name: "ghost2", Checksum: "g"}
+	if _, err := h2.svc.DownTo(ctx, "t", 1, nil); err == nil {
+		t.Error("expected error for missing file")
+	}
+	if len(h2.db.reverted) != 0 {
+		t.Errorf("reverted %v before failing on the missing file", h2.db.reverted)
+	}
+}
+
 func TestRedo(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))

@@ -200,6 +200,22 @@ func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
 	})
 }
 
+// upTo applies the pending migrations up to and including version.
+func (m *Model) upTo(t domain.Target, version int64) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, domain.Up, func(ctx context.Context, prog app.Progress) (int, error) {
+		return svc.UpTo(ctx, t.Name, version, prog)
+	})
+}
+
+// downTo rolls back everything newer than version.
+func (m *Model) downTo(t domain.Target, version int64) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, domain.Down, func(ctx context.Context, prog app.Progress) (int, error) {
+		return svc.DownTo(ctx, t.Name, version, prog)
+	})
+}
+
 // redo reverts one applied migration and applies it again.
 func (m *Model) redo(t domain.Target, version int64) tea.Cmd {
 	svc := m.svc

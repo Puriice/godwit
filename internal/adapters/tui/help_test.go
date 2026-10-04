@@ -60,7 +60,7 @@ func TestFooterWrapsToTerminalWidth(t *testing.T) {
 				t.Errorf("%s: footer line wider than the terminal: %q", name, l)
 			}
 		}
-		for _, key := range []string{"enter open", "t enable/disable", "u apply all targets", "q quit"} {
+		for _, key := range []string{"↵ open", "t enable/disable", "u apply all targets", "q quit"} {
 			if !strings.Contains(strings.ReplaceAll(view, "\n", " "), key) {
 				t.Errorf("%s: shortcut %q missing after wrapping", name, key)
 			}

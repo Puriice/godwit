@@ -43,8 +43,8 @@ func (m *Model) header(title string) string {
 
 const (
 	helpSep        = " · "
-	targetsHelp    = "↑/↓ select · enter open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
-	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
+	targetsHelp    = "↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
+	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -293,7 +293,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "u", "s", "d", "R", "c", "r":
+		case "u", "s", "d", "enter", "R", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -319,6 +319,8 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
 			return m.run(t, domain.Down, 1)
 		})
+	case "enter":
+		return m, m.goTo(t, st)
 	case "R":
 		return m, m.confirmRedo(t, st)
 	case "c":
@@ -346,15 +348,12 @@ func (m *Model) confirmRedo(t domain.Target, st *targetState) tea.Cmd {
 	}
 	it := st.items[m.mcur]
 	label := fmt.Sprintf("%d_%s", it.Version, it.Name)
-	switch it.State {
-	case domain.Pending:
+	if it.State == domain.Pending {
 		m.notice = label + " is not applied yet; use u or s to apply it"
 		return nil
-	case domain.Dirty:
-		m.notice = label + " is dirty; repair the target and clear the flag (c) first"
-		return nil
-	case domain.Missing:
-		m.notice = label + " has no migration file, so it cannot be redone"
+	}
+	if reason := blocked(it, "redone"); reason != "" {
+		m.notice = reason
 		return nil
 	}
 	later := 0
@@ -368,6 +367,60 @@ func (m *Model) confirmRedo(t domain.Target, st *targetState) tea.Cmd {
 		q += fmt.Sprintf(" %d later applied migration(s) are left as they are and may depend on it.", later)
 	}
 	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.redo(t, it.Version) })
+}
+
+// blocked explains why a migration in a dirty or missing state cannot be used
+// for action ("redone", "a target"), or returns "" if it can.
+func blocked(it domain.Item, action string) string {
+	label := fmt.Sprintf("%d_%s", it.Version, it.Name)
+	switch it.State {
+	case domain.Dirty:
+		return label + " is dirty; repair the target and clear the flag (c) first"
+	case domain.Missing:
+		return fmt.Sprintf("%s has no migration file, so it cannot be %s", label, action)
+	}
+	return ""
+}
+
+// goTo migrates the target to the selected migration. A pending selection
+// applies every pending migration up to and including it. An applied one
+// rolls back everything newer, so it becomes the latest applied migration.
+// Both ask for confirmation, since Enter is easy to press by accident and a
+// rollback can destroy data.
+func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
+	if m.mcur >= len(st.items) {
+		return nil
+	}
+	it := st.items[m.mcur]
+	label := fmt.Sprintf("%d_%s", it.Version, it.Name)
+	if reason := blocked(it, "used as a target"); reason != "" {
+		m.notice = reason
+		return nil
+	}
+
+	if it.State == domain.Pending {
+		pending := 0
+		for _, x := range st.items[:m.mcur+1] {
+			if x.State == domain.Pending {
+				pending++
+			}
+		}
+		q := fmt.Sprintf("Apply %d pending migration(s) on %s up to and including %s?", pending, t.Name, label)
+		return m.openConfirm(q, func(m *Model) tea.Cmd { return m.upTo(t, it.Version) })
+	}
+
+	newer := 0
+	for _, x := range st.items[m.mcur+1:] {
+		if x.Record != nil {
+			newer++
+		}
+	}
+	if newer == 0 {
+		m.notice = label + " is already the latest applied migration"
+		return nil
+	}
+	q := fmt.Sprintf("Roll back %d migration(s) on %s so %s is the latest applied? This runs their Down sections and may destroy data.", newer, t.Name, label)
+	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.downTo(t, it.Version) })
 }
 
 func (m *Model) clearDirty(t domain.Target, version int64) tea.Cmd {
