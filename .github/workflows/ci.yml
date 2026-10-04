@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        if: matrix.os == 'ubuntu-latest'
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: godwit
+          POSTGRES_PASSWORD: godwit
+          POSTGRES_DB: godwit
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U godwit"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_USER: godwit
+          MYSQL_PASSWORD: godwit
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: godwit
+        ports: ["53306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      GODWIT_TEST_POSTGRES: postgres://godwit:godwit@localhost:55432/godwit
+      GODWIT_TEST_MYSQL: godwit:godwit@tcp(localhost:53306)/godwit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./internal/adapters/sqldb -run Integration -v
