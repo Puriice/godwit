@@ -32,7 +32,7 @@ func installTarget(pkg string) (string, error) {
 		return "", errors.New("a package path is required, like github.com/you/godwit-driver-x/cmd/godwit-driver-x")
 	case strings.HasPrefix(pkg, "-") || strings.ContainsAny(pkg, " \t\r\n"):
 		return "", fmt.Errorf("%q is not a package path", pkg)
-	case strings.HasPrefix(pkg, ".") || strings.HasPrefix(pkg, "/") || filepath.IsAbs(pkg):
+	case strings.HasPrefix(pkg, ".") || strings.HasPrefix(pkg, "/") || strings.Contains(pkg, `\`) || filepath.IsAbs(pkg):
 		return "", fmt.Errorf("%q is a local path; build it yourself and use: godwit plugin add <command>", pkg)
 	}
 	if !strings.Contains(pkg, "@") {

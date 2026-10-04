@@ -3,6 +3,7 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/puriice/godwit/internal/domain"
@@ -31,7 +32,7 @@ func putPlugin(t *testing.T, dir, name string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, name+filepath.Ext(self))
+	path := filepath.Join(dir, name+exeExt())
 	if err := os.WriteFile(path, raw, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,4 +105,14 @@ func TestInstallGlobalGoesToHome(t *testing.T) {
 	if _, err := Probe(project, domain.PluginSpec{Name: command, Command: command}); err != nil {
 		t.Errorf("the globally installed plugin should be found from any project: %v", err)
 	}
+}
+
+// exeExt is the executable suffix a copy of the test binary needs so that a
+// bare command name finds it: ".exe" on Windows, nothing elsewhere (the test
+// binary's own ".test" suffix would stop LookPath matching the bare name).
+func exeExt() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
 }

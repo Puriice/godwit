@@ -52,7 +52,7 @@ func runFakeGo() {
 	if err != nil {
 		os.Exit(3)
 	}
-	out := filepath.Join(os.Getenv("GOBIN"), binaryName(target)+filepath.Ext(self))
+	out := filepath.Join(os.Getenv("GOBIN"), binaryName(target)+exeExt())
 	if err := os.WriteFile(out, raw, 0o755); err != nil {
 		os.Exit(3)
 	}
@@ -70,7 +70,7 @@ func withFakeGo(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "go"+filepath.Ext(self)), raw, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "go"+exeExt()), raw, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
