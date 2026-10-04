@@ -33,6 +33,8 @@ type Service struct {
 	source MigrationSource
 	dbs    DatabaseFactory
 
+	drivers *domain.Registry
+
 	mu      sync.RWMutex
 	project domain.Project
 }
@@ -46,7 +48,7 @@ func New(store ProjectStore, source MigrationSource, dbs DatabaseFactory) (*Serv
 	if p.MigrationsDir == "" {
 		p.MigrationsDir = defaultMigrationsDir
 	}
-	return &Service{store: store, source: source, dbs: dbs, project: p}, nil
+	return &Service{store: store, source: source, dbs: dbs, drivers: newRegistry(dbs), project: p}, nil
 }
 
 // ---- Project configuration ----
@@ -98,7 +100,7 @@ func (s *Service) validate(t domain.Target) error {
 	switch {
 	case strings.TrimSpace(t.Name) == "":
 		return errors.New("target name is required")
-	case !slices.Contains(s.dbs.Drivers(), strings.ToLower(t.Driver)):
+	case !slices.Contains(s.dbs.Drivers(), s.drivers.Normalize(t.Driver)):
 		return fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(s.dbs.Drivers(), ", "))
 	}
 	return nil
@@ -185,12 +187,19 @@ func (s *Service) HasPassword(name string) bool {
 	return ok
 }
 
+// NeedsPassword reports whether the target's driver uses a password at all;
+// file based plugin drivers do not.
+func (s *Service) NeedsPassword(name string) bool {
+	t, ok := s.Target(name)
+	return ok && !s.DriverNoHost(t.Driver)
+}
+
 // TargetsMissingPassword lists enabled targets with no available password.
 // Disabled targets are never connected to, so they are not asked for one.
 func (s *Service) TargetsMissingPassword() []domain.Target {
 	var out []domain.Target
 	for _, t := range s.Targets() {
-		if !t.Disabled && !s.HasPassword(t.Name) {
+		if !t.Disabled && s.NeedsPassword(t.Name) && !s.HasPassword(t.Name) {
 			out = append(out, t)
 		}
 	}
@@ -228,7 +237,7 @@ func (s *Service) open(ctx context.Context, target string) (Database, domain.Tar
 		return nil, t, fmt.Errorf("%q: %w (enable it with: godwit auth enable %s)", target, ErrTargetDisabled, target)
 	}
 	pw, ok := s.store.Password(target)
-	if !ok {
+	if !ok && s.NeedsPassword(target) {
 		return nil, t, fmt.Errorf("no password for target %q", target)
 	}
 	db, err := s.dbs.Open(ctx, t, pw)

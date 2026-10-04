@@ -8,23 +8,11 @@ import (
 	"strings"
 )
 
-// NormalizeDriver maps driver aliases onto godwit's driver names.
-func NormalizeDriver(name string) string {
-	switch n := strings.ToLower(strings.TrimSpace(name)); n {
-	case "postgresql", "pg":
-		return "postgres"
-	case "mariadb":
-		return "mysql"
-	default:
-		return n
-	}
-}
+// builtin knows only the built-in drivers; use a Registry to include plugins.
+var builtin = NewRegistry()
 
-// URL schemes accepted per driver.
-var schemes = map[string][]string{
-	"postgres": {"postgres", "postgresql"},
-	"mysql":    {"mysql", "mariadb"},
-}
+// NormalizeDriver maps built-in driver aliases onto godwit's driver names.
+func NormalizeDriver(name string) string { return builtin.Normalize(name) }
 
 // mysqlDSN matches go-sql-driver style DSNs: user:pass@tcp(host:port)/db?params
 var mysqlDSN = regexp.MustCompile(`^([^:@/]*)(?::(.*))?@(\w+)\((.*?)\)/([^?]*)(?:\?(.*))?$`)
@@ -37,43 +25,17 @@ var mysqlDSN = regexp.MustCompile(`^([^:@/]*)(?::(.*))?@(\w+)\((.*?)\)/([^?]*)(?
 //
 // The password is returned separately so callers never store it in a Target.
 func ParseConnectionString(driver, conn string) (t Target, password string, err error) {
-	driver = NormalizeDriver(driver)
-	conn = strings.TrimSpace(conn)
-	t.Driver = driver
-	if _, ok := schemes[driver]; !ok {
-		return t, "", fmt.Errorf("unsupported driver %q", driver)
-	}
-
-	switch {
-	case strings.Contains(conn, "://"):
-		password, err = parseURL(&t, conn)
-	case driver == "mysql":
-		password, err = parseMySQLDSN(&t, conn)
-	default:
-		err = fmt.Errorf("expected a URL like %s://user:pass@host:port/database", schemes[driver][0])
-	}
-	if err != nil {
-		return Target{Driver: driver}, "", err
-	}
-	switch {
-	case t.Host == "":
-		return Target{Driver: driver}, "", fmt.Errorf("connection string has no host")
-	case t.Database == "":
-		return Target{Driver: driver}, "", fmt.Errorf("connection string has no database name")
-	case t.User == "":
-		return Target{Driver: driver}, "", fmt.Errorf("connection string has no user")
-	}
-	return t, password, nil
+	return builtin.ParseConnectionString(driver, conn)
 }
 
-func parseURL(t *Target, conn string) (string, error) {
+func parseURL(t *Target, schemes []string, conn string) (string, error) {
 	u, err := url.Parse(conn)
 	if err != nil {
 		// url.Error echoes the whole input, which includes the password.
 		return "", fmt.Errorf("invalid connection URL")
 	}
 	valid := false
-	for _, s := range schemes[t.Driver] {
+	for _, s := range schemes {
 		valid = valid || strings.EqualFold(u.Scheme, s)
 	}
 	if !valid {
@@ -152,7 +114,9 @@ func (t Target) RedactedString(hasPassword bool) string {
 	if hasPassword {
 		b.WriteString(":****")
 	}
-	b.WriteByte('@')
+	if t.User != "" || hasPassword {
+		b.WriteByte('@')
+	}
 	b.WriteString(t.Host)
 	if t.Port != 0 {
 		b.WriteByte(':')

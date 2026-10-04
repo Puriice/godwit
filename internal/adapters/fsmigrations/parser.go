@@ -38,6 +38,12 @@ const (
 // "driver:" directive may use (besides "all"); anything else is an error, so a
 // typo cannot silently make statements run nowhere.
 func Parse(src string, drivers []string) (*Parsed, error) {
+	return ParseWith(src, drivers, domain.NormalizeDriver)
+}
+
+// ParseWith is Parse with a custom driver-alias normalizer, so plugin drivers
+// can be written under their aliases too.
+func ParseWith(src string, drivers []string, normalize func(string) string) (*Parsed, error) {
 	p := &Parsed{}
 	var (
 		sec     = secNone
@@ -128,7 +134,7 @@ func Parse(src string, drivers []string) (*Parsed, error) {
 					val = driverAll
 				}
 				if val != driverAll {
-					val = domain.NormalizeDriver(val) // postgresql -> postgres, ...
+					val = normalize(val) // postgresql -> postgres, ...
 					if !slices.Contains(drivers, val) {
 						return nil, fmt.Errorf("line %d: unknown driver %q (available: %s)",
 							lineNum, val, strings.Join(append([]string{driverAll}, drivers...), ", "))

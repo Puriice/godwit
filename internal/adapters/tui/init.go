@@ -62,6 +62,7 @@ func RunInit(svc *app.Service) error {
 			break
 		}
 		in := newTargetInput(svc.Drivers(), nil)
+		in.noHost = svc.DriverNoHost
 		if err := runForm(huh.NewGroup(in.fields(svc.Drivers(), nameTaken, false)...)); err != nil {
 			return cancelled(err)
 		}

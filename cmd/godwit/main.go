@@ -12,9 +12,11 @@ import (
 	"github.com/puriice/godwit/internal/adapters/cli"
 	"github.com/puriice/godwit/internal/adapters/filestore"
 	"github.com/puriice/godwit/internal/adapters/fsmigrations"
+	"github.com/puriice/godwit/internal/adapters/plugin"
 	"github.com/puriice/godwit/internal/adapters/sqldb"
 	"github.com/puriice/godwit/internal/adapters/tui"
 	"github.com/puriice/godwit/internal/app"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 const usage = `usage: godwit [command]
@@ -29,6 +31,11 @@ Targets:
   auth remove <name>                       remove a target and its saved password
   auth disable <name>                      temporarily skip a target
   auth enable <name>                       use a disabled target again
+
+Plugins:
+  plugin add <name> <command> [args...]    add a driver for another database (see docs/plugins.md)
+  plugin list                              list plugins
+  plugin remove <name>                     remove a plugin
 
 Migrations:
   migrate status [target...]               show migration states
@@ -49,7 +56,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate":
+	case "", "init", "auth", "migrate", "plugin":
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -62,8 +69,21 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	dbs := sqldb.NewFactory()
-	svc, err := app.New(filestore.New(root), fsmigrations.New(root, dbs.Drivers()), dbs)
+	store := filestore.New(root)
+	project, err := store.Load()
+	if err != nil {
+		fatal(err)
+	}
+	plugins := plugin.New(root, project.Plugins)
+	for _, w := range plugins.Warnings() {
+		fmt.Fprintln(os.Stderr, "godwit: warning:", w)
+	}
+	dbs := app.Combine(sqldb.NewFactory(), plugins)
+	reg := domain.NewRegistry()
+	for _, i := range plugins.DriverInfos() {
+		reg.Add(i)
+	}
+	svc, err := app.New(store, fsmigrations.New(root, dbs.Drivers()).WithNormalizer(reg.Normalize), dbs)
 	if err != nil {
 		fatal(err)
 	}
@@ -73,6 +93,10 @@ func main() {
 		err = tui.RunInit(svc)
 	case "auth":
 		err = cli.Auth(svc, args[1:], os.Stdout)
+	case "plugin":
+		err = cli.Plugin(svc, func(spec domain.PluginSpec) (domain.DriverInfo, error) {
+			return plugin.Probe(root, spec)
+		}, args[1:], os.Stdout)
 	case "migrate":
 		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
 	default:

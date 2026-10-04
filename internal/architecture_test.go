@@ -19,6 +19,7 @@ var allowed = map[string][]string{
 	"adapters/filestore":    {"domain", "app"},
 	"adapters/fsmigrations": {"domain", "app"},
 	"adapters/sqldb":        {"domain", "app"},
+	"adapters/plugin":       {"domain", "app"},
 	"adapters/tui":          {"domain", "app"},
 	"adapters/cli":          {"domain", "app"},
 }

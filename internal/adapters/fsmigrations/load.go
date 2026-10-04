@@ -22,13 +22,23 @@ var (
 // Source implements app.MigrationSource on the file system. Relative
 // migration directories are resolved against Root (the project root).
 type Source struct {
-	Root    string
-	drivers []string
+	Root      string
+	drivers   []string
+	normalize func(string) string
 }
 
 // New returns a Source rooted at the project directory. drivers are the
 // database drivers migrations may target in "-- +godwit driver:" directives.
-func New(root string, drivers []string) *Source { return &Source{Root: root, drivers: drivers} }
+func New(root string, drivers []string) *Source {
+	return &Source{Root: root, drivers: drivers, normalize: domain.NormalizeDriver}
+}
+
+// WithNormalizer sets how driver aliases in directives map to driver names
+// (the default knows only the built-in aliases) and returns s.
+func (s *Source) WithNormalizer(f func(string) string) *Source {
+	s.normalize = f
+	return s
+}
 
 // Resolve returns dir as an absolute path.
 func (s *Source) Resolve(dir string) string {
@@ -76,7 +86,7 @@ func (s *Source) Load(dir string) ([]*domain.Migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		parsed, err := Parse(string(raw), s.drivers)
+		parsed, err := ParseWith(string(raw), s.drivers, s.norm())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e.Name(), err)
 		}
@@ -116,4 +126,11 @@ func (s *Source) Create(dir, name string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func (s *Source) norm() func(string) string {
+	if s.normalize == nil {
+		return domain.NormalizeDriver
+	}
+	return s.normalize
 }

@@ -91,6 +91,11 @@ Targets:
   auth disable <name>                      temporarily skip a target
   auth enable <name>                       use a disabled target again
 
+Plugins:
+  plugin add <name> <command> [args...]    add a driver for another database
+  plugin list                              list plugins
+  plugin remove <name>                     remove a plugin
+
 Migrations:
   migrate status [target...]               show migration states
   migrate up [-n N | --to V] [target...]   apply pending migrations
@@ -110,6 +115,30 @@ postgres://user:pass@host:5432/db?sslmode=disable
 mysql://user:pass@host:3306/db
 user:pass@tcp(host:3306)/db          (mysql only)
 ```
+
+## Driver plugins
+
+godwit ships `postgres` and `mysql`. For any other database, add a **driver
+plugin**: a separate executable that godwit starts and talks to over stdin and
+stdout (JSON lines). It can be written in any language and works the same on
+Windows, macOS and Linux, with no rebuild of godwit.
+
+```
+godwit plugin add sqlite godwit-driver-sqlite     # looks in .godwit/plugins, then PATH
+godwit plugin add sqlite ./bin/godwit-driver-sqlite
+godwit auth add local sqlite 'sqlite://app.db'    # the plugin defines the syntax
+```
+
+`plugin add` starts the plugin once to check it, then records it in
+`.godwit/config.json`. Plugin drivers appear in the TUI and can be used in
+`-- +godwit driver: <name>` directives like the built-in ones. Plugins run with
+your privileges, so only add executables you trust. To write one, see
+[docs/plugins.md](docs/plugins.md). Go authors can import
+[`pkg/godwit`](pkg/godwit), which provides the interfaces and runs the
+protocol, so a plugin is two small interfaces and one `Serve` call. A
+complete working plugin built on it is in
+[examples/driver-jsonfile](examples/driver-jsonfile). To change how plugins work
+inside godwit, see [docs/plugin-internals.md](docs/plugin-internals.md).
 
 ## TUI keys
 

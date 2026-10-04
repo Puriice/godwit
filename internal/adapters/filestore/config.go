@@ -39,9 +39,16 @@ type targetJSON struct {
 	Disabled bool              `json:"disabled,omitempty"`
 }
 
+type pluginJSON struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
 type configJSON struct {
 	MigrationsDir string       `json:"migrationsDir"`
 	Targets       []targetJSON `json:"targets"`
+	Plugins       []pluginJSON `json:"plugins,omitempty"`
 }
 
 // Store implements app.ProjectStore.
@@ -77,6 +84,9 @@ func (s *Store) Load() (domain.Project, error) {
 		for _, t := range c.Targets {
 			p.Targets = append(p.Targets, domain.Target(t))
 		}
+		for _, pl := range c.Plugins {
+			p.Plugins = append(p.Plugins, domain.PluginSpec(pl))
+		}
 	case !errors.Is(err, os.ErrNotExist):
 		return p, err
 	}
@@ -102,6 +112,9 @@ func (s *Store) Save(p domain.Project) error {
 	c := configJSON{MigrationsDir: p.MigrationsDir, Targets: []targetJSON{}}
 	for _, t := range p.Targets {
 		c.Targets = append(c.Targets, targetJSON(t))
+	}
+	for _, pl := range p.Plugins {
+		c.Plugins = append(c.Plugins, pluginJSON(pl))
 	}
 	raw, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

@@ -151,7 +151,7 @@ func (m *Model) refresh(t domain.Target) tea.Cmd {
 		st.loading, st.err = false, nil
 		return nil
 	}
-	if !m.svc.HasPassword(t.Name) {
+	if m.svc.NeedsPassword(t.Name) && !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press p to enter it")
 		st.loaded = false
 		return nil
@@ -235,7 +235,7 @@ func (m *Model) startRun(t domain.Target, dir domain.Direction, work func(contex
 	if st.running || t.Disabled {
 		return nil
 	}
-	if !m.svc.HasPassword(t.Name) {
+	if m.svc.NeedsPassword(t.Name) && !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press p to enter it")
 		return nil
 	}

@@ -140,3 +140,30 @@ func TestDeletePassword(t *testing.T) {
 		t.Errorf("delete missing: %v", err)
 	}
 }
+
+func TestPluginsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	s := New(root)
+	want := domain.Project{MigrationsDir: "m", Plugins: []domain.PluginSpec{
+		{Name: "sqlite", Command: "./bin/godwit-driver-sqlite", Args: []string{"-v"}},
+		{Name: "duck", Command: "godwit-driver-duck"},
+	}}
+	if err := s.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(root).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Plugins) != 2 || got.Plugins[0].Command != want.Plugins[0].Command || got.Plugins[0].Args[0] != "-v" || got.Plugins[1].Name != "duck" {
+		t.Errorf("plugins = %+v", got.Plugins)
+	}
+	// Projects without plugins keep a config.json free of the key.
+	if err := s.Save(domain.Project{MigrationsDir: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(root, DirName, configFile))
+	if strings.Contains(string(raw), "plugins") {
+		t.Errorf("empty plugins written: %s", raw)
+	}
+}

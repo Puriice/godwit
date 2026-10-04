@@ -13,7 +13,7 @@ const DriverAll = "all"
 // Target is a database a project migrates. It never holds the password.
 type Target struct {
 	Name     string
-	Driver   string // "postgres" | "mysql"
+	Driver   string // built-in ("postgres", "mysql") or a plugin's driver name
 	Host     string
 	Port     int
 	Database string
@@ -27,6 +27,7 @@ type Target struct {
 type Project struct {
 	MigrationsDir string
 	Targets       []Target
+	Plugins       []PluginSpec
 }
 
 // Target returns the named target.

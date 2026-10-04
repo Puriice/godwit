@@ -116,6 +116,7 @@ func (m *Model) openCredentialForm(t domain.Target) tea.Cmd {
 // openTargetForm adds a target, or edits existing when non-nil.
 func (m *Model) openTargetForm(existing *domain.Target) tea.Cmd {
 	in := newTargetInput(m.svc.Drivers(), existing)
+	in.noHost = m.svc.DriverNoHost
 	title := "Add target"
 	if existing != nil {
 		title = "Edit target " + existing.Name
@@ -149,6 +150,19 @@ type targetInput struct {
 	port    string
 	pw      string
 	persist bool
+	// noHost reports whether a driver has no network endpoint (file based
+	// databases), so Host and User are optional. Nil means every driver has one.
+	noHost func(driver string) bool
+}
+
+func (in *targetInput) hostOptional() bool { return in.noHost != nil && in.noHost(in.t.Driver) }
+
+// requiredUnlessNoHost is required, except for drivers without a host.
+func (in *targetInput) requiredUnlessNoHost(s string) error {
+	if in.hostOptional() {
+		return nil
+	}
+	return required(s)
 }
 
 func newTargetInput(drivers []string, existing *domain.Target) *targetInput {
@@ -186,7 +200,7 @@ func (in *targetInput) fields(drivers []string, nameTaken func(string) bool, edi
 	}
 	return append(fields,
 		huh.NewSelect[string]().Title("Driver").Options(huh.NewOptions(drivers...)...).Value(&in.t.Driver),
-		huh.NewInput().Title("Host").Value(&in.t.Host).Validate(required),
+		huh.NewInput().Title("Host").Value(&in.t.Host).Validate(in.requiredUnlessNoHost),
 		huh.NewInput().Title("Port").Description("blank = driver default").Value(&in.port).Validate(func(s string) error {
 			if s == "" {
 				return nil
@@ -197,7 +211,7 @@ func (in *targetInput) fields(drivers []string, nameTaken func(string) bool, edi
 			return nil
 		}),
 		huh.NewInput().Title("Database").Value(&in.t.Database).Validate(required),
-		huh.NewInput().Title("User").Value(&in.t.User).Validate(required),
+		huh.NewInput().Title("User").Value(&in.t.User).Validate(in.requiredUnlessNoHost),
 		huh.NewInput().Title(pwTitle).EchoMode(huh.EchoModePassword).Value(&in.pw),
 		huh.NewConfirm().Title("Save password to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&in.persist),
 	)
