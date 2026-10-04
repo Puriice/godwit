@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -81,16 +82,84 @@ func (s *Service) ParseConnectionString(driver, conn string) (domain.Target, str
 	return s.drivers.ParseConnectionString(driver, conn)
 }
 
-// Plugins returns the configured driver plugins.
+// ---- Driver plugins ----
+//
+// Plugins are registered per project (.godwit/config.json) or globally for the
+// user (~/.godwit/config.json). Both lists are loaded at startup, and a project
+// entry replaces a global one with the same name.
+
+// SetGlobalStore enables global plugins, kept in store (the user's ~/.godwit).
+func (s *Service) SetGlobalStore(store ProjectStore) error {
+	g, err := store.Load()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.globalStore, s.global = store, g
+	return nil
+}
+
+// HasGlobal reports whether global plugins are available.
+func (s *Service) HasGlobal() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.globalStore != nil
+}
+
+// Plugins returns the plugins registered for this project.
 func (s *Service) Plugins() []domain.PluginSpec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return slices.Clone(s.project.Plugins)
 }
 
-// AddPlugin registers a driver plugin and saves the project. It takes effect
-// the next time godwit starts.
+// GlobalPlugins returns the plugins registered for the user.
+func (s *Service) GlobalPlugins() []domain.PluginSpec {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.global.Plugins)
+}
+
+// AddPlugin registers a driver plugin for this project and saves the project.
+// It takes effect the next time godwit starts.
 func (s *Service) AddPlugin(p domain.PluginSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return addPlugin(&s.project, s.store, p)
+}
+
+// AddGlobalPlugin registers a driver plugin for the user.
+func (s *Service) AddGlobalPlugin(p domain.PluginSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.globalStore == nil {
+		return errNoGlobal
+	}
+	return addPlugin(&s.global, s.globalStore, p)
+}
+
+// RemovePlugin unregisters a driver plugin from this project. Targets that use
+// its driver are left alone and fail until the plugin is added again.
+func (s *Service) RemovePlugin(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return removePlugin(&s.project, s.store, name)
+}
+
+// RemoveGlobalPlugin unregisters a driver plugin for the user.
+func (s *Service) RemoveGlobalPlugin(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.globalStore == nil {
+		return errNoGlobal
+	}
+	return removePlugin(&s.global, s.globalStore, name)
+}
+
+var errNoGlobal = errors.New("global plugins are unavailable: no home directory")
+
+func addPlugin(proj *domain.Project, store ProjectStore, p domain.PluginSpec) error {
 	p.Name = strings.ToLower(strings.TrimSpace(p.Name))
 	switch {
 	case p.Name == "":
@@ -98,27 +167,21 @@ func (s *Service) AddPlugin(p domain.PluginSpec) error {
 	case strings.TrimSpace(p.Command) == "":
 		return fmt.Errorf("plugin command is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if slices.ContainsFunc(s.project.Plugins, func(x domain.PluginSpec) bool { return x.Name == p.Name }) {
+	if slices.ContainsFunc(proj.Plugins, func(x domain.PluginSpec) bool { return x.Name == p.Name }) {
 		return fmt.Errorf("a plugin named %q already exists", p.Name)
 	}
-	s.project.Plugins = append(s.project.Plugins, p)
-	return s.store.Save(s.project)
+	proj.Plugins = append(proj.Plugins, p)
+	return store.Save(*proj)
 }
 
-// RemovePlugin unregisters a driver plugin. Targets that use its driver are
-// left alone and fail until the plugin is added again.
-func (s *Service) RemovePlugin(name string) error {
+func removePlugin(proj *domain.Project, store ProjectStore, name string) error {
 	name = strings.ToLower(strings.TrimSpace(name))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.project.Plugins, func(x domain.PluginSpec) bool { return x.Name == name })
+	i := slices.IndexFunc(proj.Plugins, func(x domain.PluginSpec) bool { return x.Name == name })
 	if i < 0 {
 		return fmt.Errorf("no plugin named %q", name)
 	}
-	s.project.Plugins = slices.Delete(s.project.Plugins, i, i+1)
-	return s.store.Save(s.project)
+	proj.Plugins = slices.Delete(proj.Plugins, i, i+1)
+	return store.Save(*proj)
 }
 
 // DriverNoHost reports whether a driver has no network endpoint, so targets

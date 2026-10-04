@@ -171,6 +171,48 @@ once, that has to be added to `probe` first.
 - `examples/driver-jsonfile` is a real plugin built on `pkg/godwit`. CI builds it on Linux, macOS and
   Windows through `go build ./...`.
 
+## Global plugins
+
+Plugins can be registered per project or for the user, in `~/.godwit`.
+
+- **Storage.** The global location is just a second `filestore.Store` rooted at
+  the home directory (`filestore.New(home)`), so `~/.godwit/config.json` has the
+  same shape as a project's and only its `plugins` list is used. `main.go` loads
+  it, merges it with the project's list using `domain.MergePlugins` (project
+  entries replace global ones of the same name, matched case-insensitively), and
+  gives the store to the service with `Service.SetGlobalStore`. With no home
+  directory there is no global store, and `-g` / `-G` fail with a clear error.
+- **Service API.** `Plugins`, `AddPlugin` and `RemovePlugin` act on the project;
+  `GlobalPlugins`, `AddGlobalPlugin` and `RemoveGlobalPlugin` on the user's list.
+  They share `addPlugin` / `removePlugin`, which take the project and store to
+  change, so validation cannot drift apart.
+- **Lookup.** `resolve` searches `<project>/.godwit/plugins`, then
+  `~/.godwit/plugins`, then `PATH`. A global install therefore needs no path in
+  any config, and `-G` writes the same bare command to both lists.
+- **Install.** `plugin.Install` takes a root and builds into
+  `<root>/.godwit/plugins`; a global install passes the home directory as the
+  root. The CLI reaches it through `PluginOps.Install(ctx, global, ...)`.
+- **Scopes in the CLI.** `parsePluginArgs` pulls `-g` / `-G` out of the arguments
+  before `--` and rejects any other flag, so a typo is an error rather than a
+  command name. `pluginRegister` computes the destinations, checks all of them
+  for conflicts, and only then writes, so `-G` never leaves a half-registered
+  plugin. A global entry's relative path is made absolute because a relative path
+  is meaningless outside the directory it was typed in.
+- **Listing.** `pluginList` prints a "Project plugins" section, then a "Global
+  plugins (~/.godwit)" section when a home directory exists. A global entry is
+  overridden when the project has a plugin of the same name, which is the same
+  rule `domain.MergePlugins` applies at startup. `printPluginRows` lays the rows
+  out as plain text with `text/tabwriter`, and only afterwards styles the
+  overridden ones with lipgloss (faint and strikethrough). Styling after layout
+  keeps escape codes from breaking column widths, and lipgloss emits no codes
+  unless the writer is a terminal (or `CLICOLOR_FORCE` is set), so piped output
+  stays plain. The `✗` marker and `overridden by project` text carry the meaning
+  without color. Only the plugin's own text is struck through: padding is not
+  (`StrikethroughSpaces(false)`) and neither is the note.
+- **Only plugins are global.** Only plugins are read
+  from `~/.godwit`. Targets, passwords and the migrations directory are always
+  the project's.
+
 ## Installing plugins
 
 `godwit plugin install` is `plugin.Install` (build) followed by the same
@@ -184,7 +226,8 @@ register step `plugin add` uses (`pluginRegister` in `cli/plugin.go`).
    becoming a flag to `go install`. It is the one place user text reaches a
    command line.
 2. It requires `go` on `PATH`. godwit never downloads a toolchain.
-3. It runs `go install <target>` with `GOBIN=<root>/.godwit/plugins`, passing the
+3. It runs `go install <target>` with `GOBIN=<root>/.godwit/plugins` (the root
+   is the home directory for a global install), passing the
    tool's output through, and writes a `.gitignore` (`*`) into that directory.
 4. `binaryName` predicts the executable's name the way `go install` names it
    (the last path element, skipping a `/vN` major-version suffix), and `Install`

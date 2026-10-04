@@ -25,8 +25,12 @@ func ops(installed *[]string) PluginOps {
 			}
 			return domain.DriverInfo{Name: strings.ToUpper(spec.Command[:1]) + spec.Command[1:]}, nil
 		},
-		Install: func(_ context.Context, pkg string, stdout, _ io.Writer) (string, error) {
-			*installed = append(*installed, pkg)
+		Install: func(_ context.Context, global bool, pkg string, stdout, _ io.Writer) (string, error) {
+			if global {
+				*installed = append(*installed, "global "+pkg)
+			} else {
+				*installed = append(*installed, pkg)
+			}
 			if strings.Contains(pkg, "nogo") {
 				return "", errors.New("needs the Go toolchain")
 			}

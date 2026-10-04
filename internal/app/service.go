@@ -37,6 +37,11 @@ type Service struct {
 
 	mu      sync.RWMutex
 	project domain.Project
+
+	// globalStore keeps user-wide settings (driver plugins) in ~/.godwit. It is
+	// nil when there is no home directory.
+	globalStore ProjectStore
+	global      domain.Project
 }
 
 // New loads the project from store and returns a Service.

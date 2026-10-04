@@ -34,10 +34,11 @@ Targets:
   auth enable <name>                       use a disabled target again
 
 Plugins:
-  plugin install <url> [name]              build a driver plugin from a Go package and add it
-  plugin add <command> [name]              add a driver plugin you already have (see docs/plugins.md)
-  plugin list                              list plugins
-  plugin remove <name>                     remove a plugin
+  plugin install [-g|-G] <url> [name]      build a driver plugin from a Go package and add it
+  plugin add [-g|-G] <command> [name]      add a driver plugin you already have (see docs/plugins.md)
+  plugin list                              list plugins (project and global)
+  plugin remove [-g|-G] <name>             remove a plugin
+                                           -g = global (~/.godwit), -G = global and this project
 
 Migrations:
   migrate status [target...]               show migration states
@@ -76,7 +77,18 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	plugins := plugin.New(root, project.Plugins)
+	// Global plugins live in ~/.godwit; a project's own entries replace them.
+	var global *filestore.Store
+	specs := project.Plugins
+	if home, err := os.UserHomeDir(); err == nil {
+		global = filestore.New(home)
+		g, err := global.Load()
+		if err != nil {
+			fatal(err)
+		}
+		specs = domain.MergePlugins(g.Plugins, project.Plugins)
+	}
+	plugins := plugin.New(root, specs)
 	for _, w := range plugins.Warnings() {
 		fmt.Fprintln(os.Stderr, "godwit: warning:", w)
 	}
@@ -89,6 +101,11 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	if global != nil {
+		if err := svc.SetGlobalStore(global); err != nil {
+			fatal(err)
+		}
+	}
 
 	switch cmd {
 	case "init":
@@ -98,8 +115,16 @@ func main() {
 	case "plugin":
 		err = cli.Plugin(context.Background(), svc, cli.PluginOps{
 			Probe: func(spec domain.PluginSpec) (domain.DriverInfo, error) { return plugin.Probe(root, spec) },
-			Install: func(ctx context.Context, pkg string, stdout, stderr io.Writer) (string, error) {
-				return plugin.Install(ctx, root, pkg, stdout, stderr)
+			Install: func(ctx context.Context, global bool, pkg string, stdout, stderr io.Writer) (string, error) {
+				dir := root
+				if global {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return "", err
+					}
+					dir = home
+				}
+				return plugin.Install(ctx, dir, pkg, stdout, stderr)
 			},
 		}, args[1:], os.Stdout)
 	case "migrate":

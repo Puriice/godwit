@@ -48,9 +48,46 @@ write a plugin in another language or want to know what `Serve` does.
 Two commands register a plugin. Both start it once to check it before saving.
 
 ```
-godwit plugin install <url> [name] [-- args...]   # build from a Go package, then add
-godwit plugin add <command> [name] [-- args...]   # add an executable you already have
+godwit plugin install [-g|-G] <url> [name] [-- args...]   # build from a Go package, then add
+godwit plugin add [-g|-G] <command> [name] [-- args...]   # add an executable you already have
 ```
+
+By default a plugin belongs to the current project only. Two flags change where
+it is registered:
+
+| Flag | Registered in | Binary built by `install` goes to |
+|---|---|---|
+| (none) | this project, `.godwit/config.json` | `<project>/.godwit/plugins/` |
+| `-g` | your user, `~/.godwit/config.json` | `~/.godwit/plugins/` |
+| `-G` | both | `~/.godwit/plugins/` |
+
+A global plugin is available in every project, so you install it once. A project
+entry replaces a global one with the same name, which lets one repository pin a
+different build. `plugin remove` takes the same flags (`-G` removes it from
+wherever it is).
+
+`plugin list` groups plugins by where they are registered. A global plugin that
+a project plugin replaces is marked with `✗` and `overridden by project`, and on
+a terminal it is also dimmed and struck through, so it is clear it has no effect
+in this project:
+
+```
+Project plugins
+    jsonfile  ./tool -v
+
+Global plugins (~/.godwit)
+  ✗ jsonfile  /home/me/bin/jsonfile  overridden by project
+    duck      duck
+```
+
+The marker is plain text, so it still shows when the output is piped or the
+terminal has no color. An empty section prints `(none)`.
+`-G` is all or nothing: if the project already has a different plugin by that
+name, nothing is changed.
+
+A relative path given with `-g` or `-G` is stored as an absolute path in the
+global config, since it could not mean the same thing from every project. The
+project's own entry keeps what you typed.
 
 **`install`** runs `go install <url>` with `GOBIN` set to
 `<project>/.godwit/plugins/`, then registers the result. `<url>` is a Go package
@@ -75,8 +112,8 @@ signatures; pin a version (`@v1.2.0`) for repeatable installs.
 
 - If it contains a path separator, it is a path, relative to the project root
   unless absolute.
-- Otherwise godwit looks for it in `<project>/.godwit/plugins/`, then on `PATH`.
-  On Windows the usual `PATHEXT` rules apply, so `godwit-driver-x` finds
+- Otherwise godwit looks for it in `<project>/.godwit/plugins/`, then in
+  `~/.godwit/plugins/`, then on `PATH`. On Windows the usual `PATHEXT` rules apply, so `godwit-driver-x` finds
   `godwit-driver-x.exe`.
 
 The plugin is stored in `.godwit/config.json`:

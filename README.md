@@ -126,6 +126,7 @@ Windows, macOS and Linux, with no rebuild of godwit.
 
 ```
 godwit plugin install github.com/you/godwit-driver-sqlite   # go install into .godwit/plugins
+godwit plugin install -g github.com/you/godwit-driver-sqlite # ...or once for every project, in ~/.godwit
 godwit plugin add ./bin/godwit-driver-sqlite                # or use an executable you have
 godwit auth add local sqlite 'sqlite://app.db'              # the plugin defines the syntax
 ```
@@ -134,7 +135,8 @@ godwit auth add local sqlite 'sqlite://app.db'              # the plugin defines
 add `@version` to pin one) and `plugin add` takes any executable. Both start the
 plugin once to check it, then record it in `.godwit/config.json`. The plugin's
 name defaults to the driver name it reports; pass one as the last argument to
-choose your own. Plugin drivers appear in the TUI and can be used in
+choose your own. Add `-g` to register a plugin for your user in `~/.godwit`, so
+every project sees it, or `-G` to register it both globally and in the project. Plugin drivers appear in the TUI and can be used in
 `-- +godwit driver: <name>` directives like the built-in ones. Plugins run with
 your privileges, so only add executables you trust. To write one, see
 [docs/plugins.md](docs/plugins.md). Go authors can import

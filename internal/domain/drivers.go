@@ -13,6 +13,22 @@ type PluginSpec struct {
 	Args    []string // extra arguments
 }
 
+// MergePlugins combines the user's global plugins with a project's. A project
+// entry replaces a global one with the same name; order is global first.
+func MergePlugins(global, project []PluginSpec) []PluginSpec {
+	var out []PluginSpec
+	for _, g := range global {
+		overridden := false
+		for _, p := range project {
+			overridden = overridden || strings.EqualFold(p.Name, g.Name)
+		}
+		if !overridden {
+			out = append(out, g)
+		}
+	}
+	return append(out, project...)
+}
+
 // DriverInfo describes how a driver's connection strings are written. The
 // built-in drivers are described by NewRegistry; plugins supply their own.
 type DriverInfo struct {

@@ -18,8 +18,9 @@ import (
 
 // resolve finds a plugin executable. A command with a path separator is taken
 // relative to the project root; a bare name is looked up in
-// <root>/.godwit/plugins first, then on PATH. exec.LookPath honours PATHEXT on
-// Windows and the executable bit elsewhere.
+// <root>/.godwit/plugins first, then in the user's ~/.godwit/plugins, then on
+// PATH. exec.LookPath honours PATHEXT on Windows and the executable bit
+// elsewhere.
 func resolve(root, command string) (string, error) {
 	if strings.ContainsAny(command, `/\`) {
 		p := filepath.FromSlash(command)
@@ -28,8 +29,13 @@ func resolve(root, command string) (string, error) {
 		}
 		return exec.LookPath(p)
 	}
-	if p, err := exec.LookPath(filepath.Join(root, ".godwit", "plugins", command)); err == nil {
+	if p, err := exec.LookPath(filepath.Join(pluginsDir(root), command)); err == nil {
 		return p, nil
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if p, err := exec.LookPath(filepath.Join(pluginsDir(home), command)); err == nil {
+			return p, nil
+		}
 	}
 	return exec.LookPath(command)
 }

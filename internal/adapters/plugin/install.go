@@ -54,7 +54,8 @@ func binaryName(target string) string {
 }
 
 // Install builds a plugin with "go install" into <root>/.godwit/plugins and
-// returns the command name to register for it. pkg is a Go package path, with an
+// returns the command name to register for it. Pass the user's home directory
+// as root to install globally into ~/.godwit/plugins. pkg is a Go package path, with an
 // optional @version (default @latest). It needs the Go toolchain on PATH.
 // Output of the go tool is copied to stdout and stderr.
 //
