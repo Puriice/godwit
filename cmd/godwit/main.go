@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/puriice/godwit/internal/adapters/cli"
 	"github.com/puriice/godwit/internal/adapters/filestore"
 	"github.com/puriice/godwit/internal/adapters/fsmigrations"
 	"github.com/puriice/godwit/internal/adapters/sqldb"
@@ -18,21 +19,29 @@ import (
 const usage = `usage: godwit [command]
 
 Commands:
-  (none)  open the migration TUI
-  init    set the migrations directory and add targets
+  (none)                                   open the migration TUI
+  init                                     set the migrations directory and add targets
+  auth add <name> <driver> <conn string>   add a target from a connection string
+  auth list                                list targets (passwords redacted)
+  auth remove <name>                       remove a target and its saved password
+  auth disable <name>                      temporarily skip a target
+  auth enable <name>                       use a disabled target again
 `
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "help", "-h", "--help":
-			fmt.Print(usage)
-			return
-		case "init":
-		default:
-			fmt.Fprintf(os.Stderr, "godwit: unknown command %q\n\n%s", os.Args[1], usage)
-			os.Exit(2)
-		}
+	args := os.Args[1:]
+	cmd := ""
+	if len(args) > 0 {
+		cmd = args[0]
+	}
+	switch cmd {
+	case "", "init", "auth":
+	case "help", "-h", "--help":
+		fmt.Print(usage)
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "godwit: unknown command %q\n\n%s", cmd, usage)
+		os.Exit(2)
 	}
 
 	root, err := os.Getwd()
@@ -44,13 +53,15 @@ func main() {
 		fatal(err)
 	}
 
-	if len(os.Args) > 1 { // "init"
-		if err := tui.RunInit(svc); err != nil {
-			fatal(err)
-		}
-		return
+	switch cmd {
+	case "init":
+		err = tui.RunInit(svc)
+	case "auth":
+		err = cli.Auth(svc, args[1:], os.Stdout)
+	default:
+		_, err = tea.NewProgram(tui.New(svc), tea.WithAltScreen()).Run()
 	}
-	if _, err := tea.NewProgram(tui.New(svc), tea.WithAltScreen()).Run(); err != nil {
+	if err != nil {
 		fatal(err)
 	}
 }

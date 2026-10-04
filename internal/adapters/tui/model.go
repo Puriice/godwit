@@ -147,6 +147,10 @@ func (m *Model) refresh(t domain.Target) tea.Cmd {
 	if st.running {
 		return nil
 	}
+	if t.Disabled { // never connect to a disabled target
+		st.loading, st.err = false, nil
+		return nil
+	}
 	if !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press p to enter it")
 		st.loaded = false
@@ -161,9 +165,33 @@ func (m *Model) refresh(t domain.Target) tea.Cmd {
 }
 
 // run applies or reverts migrations on one target, streaming progress.
-func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
+// toggleTarget enables a disabled target or disables an enabled one.
+func (m *Model) toggleTarget(t domain.Target) tea.Cmd {
 	st := m.state(t.Name)
 	if st.running {
+		m.notice = "a run is in progress on " + t.Name
+		return nil
+	}
+	enable := t.Disabled
+	if err := m.svc.SetTargetEnabled(t.Name, enable); err != nil {
+		m.notice = err.Error()
+		return nil
+	}
+	if !enable {
+		st.items, st.loaded, st.loading, st.err, st.runErr = nil, false, false, nil, nil
+		m.notice = fmt.Sprintf("disabled %s; press t to enable it again", t.Name)
+		return nil
+	}
+	m.notice = "enabled " + t.Name
+	if updated, ok := m.svc.Target(t.Name); ok {
+		return m.refresh(updated)
+	}
+	return nil
+}
+
+func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
+	st := m.state(t.Name)
+	if st.running || t.Disabled {
 		return nil
 	}
 	if !m.svc.HasPassword(t.Name) {

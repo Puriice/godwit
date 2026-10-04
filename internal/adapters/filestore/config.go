@@ -36,6 +36,7 @@ type targetJSON struct {
 	Database string            `json:"database"`
 	User     string            `json:"user"`
 	Params   map[string]string `json:"params,omitempty"`
+	Disabled bool              `json:"disabled,omitempty"`
 }
 
 type configJSON struct {

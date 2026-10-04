@@ -332,6 +332,56 @@ func TestPasswords(t *testing.T) {
 	}
 }
 
+func TestDisabledTarget(t *testing.T) {
+	h := newHarness(t, mig(1, "a"))
+	ctx := context.Background()
+
+	if err := h.svc.SetTargetEnabled("t", false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.svc.Target("t"); !got.Disabled || !h.store.project.Targets[0].Disabled {
+		t.Errorf("not disabled / not saved: %+v", got)
+	}
+
+	// Every operation that would connect refuses, and never opens a connection.
+	ops := map[string]func() error{
+		"status": func() error { _, err := h.svc.Status(ctx, "t"); return err },
+		"up":     func() error { _, err := h.svc.Up(ctx, "t", 0, nil); return err },
+		"down":   func() error { _, err := h.svc.Down(ctx, "t", 0, nil); return err },
+		"clear":  func() error { return h.svc.ClearDirty(ctx, "t", 1) },
+	}
+	for name, op := range ops {
+		if err := op(); !errors.Is(err, ErrTargetDisabled) {
+			t.Errorf("%s: err = %v, want ErrTargetDisabled", name, err)
+		}
+	}
+	if h.db.closed != 0 || len(h.db.recs) != 0 {
+		t.Errorf("a disabled target was touched: closed=%d recs=%d", h.db.closed, len(h.db.recs))
+	}
+
+	// Disabled targets are not asked for passwords; their settings are kept.
+	delete(h.store.pw, "t")
+	if got := h.svc.TargetsMissingPassword(); len(got) != 0 {
+		t.Errorf("missing = %+v", got)
+	}
+
+	// Disabling twice is a no-op; enabling restores normal operation.
+	saves := h.store.saves
+	if err := h.svc.SetTargetEnabled("t", false); err != nil || h.store.saves != saves {
+		t.Errorf("repeat disable: err=%v saves %d->%d", err, saves, h.store.saves)
+	}
+	h.store.pw["t"] = "secret"
+	if err := h.svc.SetTargetEnabled("t", true); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := h.svc.Up(ctx, "t", 0, nil); err != nil || n != 1 {
+		t.Errorf("after enable: n=%d err=%v", n, err)
+	}
+	if err := h.svc.SetTargetEnabled("ghost", true); err == nil {
+		t.Error("expected error for unknown target")
+	}
+}
+
 func TestMigrationsDir(t *testing.T) {
 	h := newHarness(t)
 	if h.svc.MigrationsDir() != "migrations" {

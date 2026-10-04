@@ -15,6 +15,9 @@ import (
 
 const defaultMigrationsDir = "migrations"
 
+// ErrTargetDisabled is returned when an operation needs a disabled target.
+var ErrTargetDisabled = errors.New("target is disabled")
+
 // Progress receives run events. It may be nil.
 type Progress func(domain.Event)
 
@@ -160,17 +163,34 @@ func (s *Service) RemoveTarget(name string) error {
 	return s.store.Save(s.project)
 }
 
+// SetTargetEnabled enables or disables a target and saves the project. A
+// disabled target keeps its settings and password but is never connected to.
+func (s *Service) SetTargetEnabled(name string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == name })
+	if i < 0 {
+		return fmt.Errorf("no target named %q", name)
+	}
+	if s.project.Targets[i].Disabled == !enabled {
+		return nil // already in the requested state
+	}
+	s.project.Targets[i].Disabled = !enabled
+	return s.store.Save(s.project)
+}
+
 // HasPassword reports whether a password is available for the target.
 func (s *Service) HasPassword(name string) bool {
 	_, ok := s.store.Password(name)
 	return ok
 }
 
-// TargetsMissingPassword lists targets with no available password.
+// TargetsMissingPassword lists enabled targets with no available password.
+// Disabled targets are never connected to, so they are not asked for one.
 func (s *Service) TargetsMissingPassword() []domain.Target {
 	var out []domain.Target
 	for _, t := range s.Targets() {
-		if !s.HasPassword(t.Name) {
+		if !t.Disabled && !s.HasPassword(t.Name) {
 			out = append(out, t)
 		}
 	}
@@ -203,6 +223,9 @@ func (s *Service) open(ctx context.Context, target string) (Database, domain.Tar
 	t, ok := s.Target(target)
 	if !ok {
 		return nil, t, fmt.Errorf("no target named %q", target)
+	}
+	if t.Disabled {
+		return nil, t, fmt.Errorf("%q: %w (enable it with: godwit auth enable %s)", target, ErrTargetDisabled, target)
 	}
 	pw, ok := s.store.Password(target)
 	if !ok {

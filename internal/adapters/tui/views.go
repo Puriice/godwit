@@ -96,6 +96,8 @@ func (m *Model) viewTargets() string {
 		st := m.state(t.Name)
 		var status string
 		switch {
+		case t.Disabled:
+			status = dimStyle.Render("disabled · press t to enable")
 		case st.running:
 			status = warnStyle.Render("running…")
 		case st.loading:
@@ -107,12 +109,15 @@ func (m *Model) viewTargets() string {
 		case st.loaded:
 			status = summarize(st.items)
 		}
-		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor),
-			fmt.Sprintf("%-16s %-9s", t.Name, t.Driver), dimStyle.Render(targetLine(t)))
+		label := fmt.Sprintf("%-16s %-9s", t.Name, t.Driver)
+		if t.Disabled {
+			label = dimStyle.Render(label)
+		}
+		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor), label, dimStyle.Render(targetLine(t)))
 		fmt.Fprintf(&b, "    %s\n", status)
 	}
 	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
-	return b.String() + m.footer("↑/↓ select · enter open · a add · e edit · x delete · p password · u apply all targets · r refresh · n new migration · q quit")
+	return b.String() + m.footer("↑/↓ select · enter open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit")
 }
 
 func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -138,6 +143,10 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if t, ok := m.currentTarget(); ok {
 			return m, m.openTargetForm(&t)
 		}
+	case "t":
+		if t, ok := m.currentTarget(); ok {
+			return m, m.toggleTarget(t)
+		}
 	case "p":
 		if t, ok := m.currentTarget(); ok {
 			return m, m.openPasswordForm(t)
@@ -161,13 +170,22 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		return m, m.openNewMigrationForm()
 	case "u":
-		if n == 0 {
+		enabled := 0
+		for _, t := range m.targets() {
+			if !t.Disabled {
+				enabled++
+			}
+		}
+		if enabled == 0 {
+			m.notice = "no enabled targets"
 			break
 		}
-		return m, m.openConfirm(fmt.Sprintf("Apply all pending migrations to all %d target(s)?", n), func(m *Model) tea.Cmd {
+		return m, m.openConfirm(fmt.Sprintf("Apply all pending migrations to %d enabled target(s)? (disabled targets are skipped)", enabled), func(m *Model) tea.Cmd {
 			var cmds []tea.Cmd
 			for _, t := range m.targets() {
-				cmds = append(cmds, m.run(t, domain.Up, 0))
+				if !t.Disabled {
+					cmds = append(cmds, m.run(t, domain.Up, 0))
+				}
 			}
 			return tea.Batch(cmds...)
 		})
@@ -185,6 +203,9 @@ func (m *Model) viewMigrations() string {
 	b.WriteString(m.header(fmt.Sprintf("%s (%s %s)", t.Name, t.Driver, targetLine(t))))
 
 	switch {
+	case t.Disabled:
+		b.WriteString(dimStyle.Render("This target is disabled. Press t to enable it."))
+		b.WriteRune('\n')
 	case st.err != nil && !st.loaded:
 		b.WriteString(errStyle.Render(st.err.Error()))
 		b.WriteRune('\n')
@@ -233,7 +254,7 @@ func (m *Model) viewMigrations() string {
 		b.WriteString(dimStyle.Render(strings.Join(st.log[len(st.log)-logLines:], "\n")))
 		b.WriteRune('\n')
 	}
-	return b.String() + m.footer("↑/↓ select · u apply all · s apply next · d roll back last · c clear dirty · r refresh · n new · esc back")
+	return b.String() + m.footer("↑/↓ select · u apply all · s apply next · d roll back last · c clear dirty · t enable/disable · r refresh · n new · esc back")
 }
 
 func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -243,9 +264,18 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st := m.state(t.Name)
+	if t.Disabled {
+		switch key.String() {
+		case "u", "s", "d", "c", "r":
+			m.notice = t.Name + " is disabled; press t to enable it"
+			return m, nil
+		}
+	}
 	switch key.String() {
 	case "esc", "b", "q":
 		m.screen = scrTargets
+	case "t":
+		return m, m.toggleTarget(t)
 	case "up", "k":
 		if m.mcur > 0 {
 			m.mcur--

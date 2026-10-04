@@ -24,7 +24,7 @@ func TestRoundTripAndGitignore(t *testing.T) {
 	}
 	p.MigrationsDir = "db/migs"
 	p.Targets = []domain.Target{{Name: "prod-db", Driver: "postgres", Host: "h", Port: 5432, Database: "d", User: "u",
-		Params: map[string]string{"sslmode": "disable"}}}
+		Params: map[string]string{"sslmode": "disable"}, Disabled: true}}
 	if err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestRoundTripAndGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p2.MigrationsDir != "db/migs" || len(p2.Targets) != 1 || p2.Targets[0].Name != "prod-db" ||
-		p2.Targets[0].Params["sslmode"] != "disable" || p2.Targets[0].Port != 5432 {
+		p2.Targets[0].Params["sslmode"] != "disable" || p2.Targets[0].Port != 5432 || !p2.Targets[0].Disabled {
 		t.Errorf("round trip: %+v", p2)
 	}
 }

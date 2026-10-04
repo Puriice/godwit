@@ -79,6 +79,72 @@ func TestNavigation(t *testing.T) {
 	}
 }
 
+func TestToggleDisableAndEnable(t *testing.T) {
+	m := testModel(t)
+	st := m.state("a")
+	st.loaded, st.items = true, []domain.Item{{Version: 1, Name: "x", State: domain.Applied}}
+
+	// t on the targets list disables the selected target and persists it.
+	m.Update(key("t"))
+	if a, _ := m.svc.Target("a"); !a.Disabled {
+		t.Fatal("a should be disabled")
+	}
+	if b, _ := m.svc.Target("b"); b.Disabled {
+		t.Error("b should be unaffected")
+	}
+	if st.loaded || len(st.items) != 0 {
+		t.Error("stale status kept for a disabled target")
+	}
+	view := m.View()
+	if !strings.Contains(view, "disabled") {
+		t.Errorf("targets view does not show the disabled state:\n%s", view)
+	}
+
+	// A disabled target is never refreshed or run.
+	a, _ := m.svc.Target("a")
+	if cmd := m.refresh(a); cmd != nil || st.loading {
+		t.Error("refresh must not connect to a disabled target")
+	}
+	if cmd := m.run(a, domain.Up, 0); cmd != nil || st.running {
+		t.Error("run must not start on a disabled target")
+	}
+
+	// Its migrations screen explains and ignores action keys.
+	m.Update(key("enter"))
+	if m.screen != scrMigrations || !strings.Contains(m.View(), "disabled") {
+		t.Errorf("migrations view:\n%s", m.View())
+	}
+	m.Update(key("u"))
+	if st.running || !strings.Contains(m.notice, "disabled") {
+		t.Errorf("u on a disabled target: running=%v notice=%q", st.running, m.notice)
+	}
+
+	// t on the migrations screen enables it again; a refresh is started.
+	_, cmd := m.Update(key("t"))
+	if a, _ := m.svc.Target("a"); a.Disabled {
+		t.Fatal("a should be enabled")
+	}
+	if cmd == nil || !st.loading {
+		t.Error("enabling should start a status refresh")
+	}
+}
+
+func TestApplyAllSkipsDisabled(t *testing.T) {
+	m := testModel(t)
+	m.svc.SetTargetEnabled("a", false)
+	m.svc.SetTargetEnabled("b", false)
+	m.Update(key("u"))
+	if m.screen == scrForm || !strings.Contains(m.notice, "no enabled") {
+		t.Errorf("screen=%v notice=%q", m.screen, m.notice)
+	}
+
+	m.svc.SetTargetEnabled("b", true)
+	m.Update(key("u"))
+	if m.screen != scrForm || !strings.Contains(m.formTitle, "Confirm") {
+		t.Errorf("expected a confirm form, screen=%v", m.screen)
+	}
+}
+
 func TestMissingPasswordQueuesCredentialForm(t *testing.T) {
 	m := New(testService(t, domain.Target{Name: "nopw", Driver: "mysql"}))
 	if len(m.credQueue) != 1 {

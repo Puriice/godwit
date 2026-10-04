@@ -19,6 +19,8 @@ type Target struct {
 	Database string
 	User     string
 	Params   map[string]string
+	// Disabled targets are skipped by every operation until re-enabled.
+	Disabled bool
 }
 
 // Project is the project-level configuration.
