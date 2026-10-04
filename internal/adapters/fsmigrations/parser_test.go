@@ -1,9 +1,11 @@
-package migration
+package fsmigrations
 
 import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/puriice/godwit/internal/domain"
 )
 
 func TestParse(t *testing.T) {
@@ -42,18 +44,18 @@ DROP TABLE users;
 	if len(p.Up) != 4 || len(p.Down) != 1 {
 		t.Fatalf("got %d up, %d down", len(p.Up), len(p.Down))
 	}
-	if p.Up[1].Driver != "postgres" || p.Up[2].Driver != "mysql" || p.Up[3].Driver != DriverAll {
+	if p.Up[1].Driver != "postgres" || p.Up[2].Driver != "mysql" || p.Up[3].Driver != driverAll {
 		t.Errorf("drivers: %+v", p.Up)
 	}
 	if !strings.Contains(p.Up[3].SQL, "RETURN 1;") {
 		t.Errorf("block body split: %q", p.Up[3].SQL)
 	}
 
-	got := StatementsFor(p.Up, "MySQL")
+	got := (&domain.Migration{Up: p.Up}).UpSQL("MySQL")
 	if len(got) != 3 {
 		t.Errorf("mysql statements = %d, want 3: %v", len(got), got)
 	}
-	got = StatementsFor(p.Up, "postgres")
+	got = (&domain.Migration{Up: p.Up}).UpSQL("postgres")
 	if len(got) != 3 {
 		t.Errorf("postgres statements = %d, want 3: %v", len(got), got)
 	}
@@ -64,7 +66,7 @@ func TestParseDriverResetsPerSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(p.Down, []Statement{{Driver: DriverAll, SQL: "SELECT 2;"}}) {
+	if !reflect.DeepEqual(p.Down, []Statement{{Driver: driverAll, SQL: "SELECT 2;"}}) {
 		t.Errorf("down = %+v", p.Down)
 	}
 }

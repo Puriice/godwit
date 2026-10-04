@@ -1,4 +1,4 @@
-package migration
+package fsmigrations
 
 import (
 	"crypto/sha256"
@@ -8,22 +8,41 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
+
+	"github.com/puriice/godwit/internal/domain"
 )
 
-var fileRe = regexp.MustCompile(`^(\d+)_([A-Za-z0-9_\-]+)\.sql$`)
+var (
+	fileRe = regexp.MustCompile(`^(\d+)_([A-Za-z0-9_\-]+)\.sql$`)
+	nameRe = regexp.MustCompile(`^[A-Za-z0-9_\-]+$`)
+)
 
-// Migration is a parsed migration file.
-type Migration struct {
-	Version  int64
-	Name     string
-	Path     string
-	Checksum string // sha256 hex of the raw file
-	Parsed   *Parsed
+// Source implements app.MigrationSource on the file system. Relative
+// migration directories are resolved against Root (the project root).
+type Source struct {
+	Root string
 }
 
-// Load reads and parses every migration in dir, sorted by version.
-func Load(dir string) ([]*Migration, error) {
+// New returns a Source rooted at the project directory.
+func New(root string) *Source { return &Source{Root: root} }
+
+// Resolve returns dir as an absolute path.
+func (s *Source) Resolve(dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(s.Root, dir)
+}
+
+// EnsureDir creates the migrations directory if needed.
+func (s *Source) EnsureDir(dir string) error { return os.MkdirAll(s.Resolve(dir), 0o755) }
+
+// Load reads and parses every migration in dir, sorted by version. A missing
+// directory yields no migrations.
+func (s *Source) Load(dir string) ([]*domain.Migration, error) {
+	dir = s.Resolve(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -31,7 +50,7 @@ func Load(dir string) ([]*Migration, error) {
 		}
 		return nil, err
 	}
-	var out []*Migration
+	var out []*domain.Migration
 	seen := map[int64]string{}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -41,8 +60,8 @@ func Load(dir string) ([]*Migration, error) {
 		if m == nil {
 			continue
 		}
-		var ver int64
-		if _, err := fmt.Sscanf(m[1], "%d", &ver); err != nil {
+		ver, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
 			return nil, fmt.Errorf("%s: bad version: %w", e.Name(), err)
 		}
 		if prev, dup := seen[ver]; dup {
@@ -60,12 +79,14 @@ func Load(dir string) ([]*Migration, error) {
 			return nil, fmt.Errorf("%s: %w", e.Name(), err)
 		}
 		sum := sha256.Sum256(raw)
-		out = append(out, &Migration{
-			Version:  ver,
-			Name:     m[2],
-			Path:     path,
-			Checksum: hex.EncodeToString(sum[:]),
-			Parsed:   parsed,
+		out = append(out, &domain.Migration{
+			Version:       ver,
+			Name:          m[2],
+			Source:        path,
+			Checksum:      hex.EncodeToString(sum[:]),
+			Up:            parsed.Up,
+			Down:          parsed.Down,
+			NoTransaction: parsed.NoTransaction,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -80,10 +101,11 @@ const template = `-- +godwit Up
 `
 
 // Create scaffolds a new migration file in dir and returns its path.
-func Create(dir, name string) (string, error) {
-	if !regexp.MustCompile(`^[A-Za-z0-9_\-]+$`).MatchString(name) {
+func (s *Source) Create(dir, name string) (string, error) {
+	if !nameRe.MatchString(name) {
 		return "", fmt.Errorf("invalid migration name %q (use letters, digits, _ and -)", name)
 	}
+	dir = s.Resolve(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

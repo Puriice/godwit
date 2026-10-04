@@ -1,3 +1,5 @@
 .env
 .DS_Store
+
+# Because this is intended for testing only, real project can leave this inside the repository.
 .godwit

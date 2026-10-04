@@ -1,5 +1,5 @@
-// Package tui is the Bubble Tea front end. It talks only to config, migration
-// and runner; SQL never appears here.
+// Package tui is the Bubble Tea driving adapter. It talks only to the app
+// service and domain types; SQL, files and drivers never appear here.
 package tui
 
 import (
@@ -9,9 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
-	"github.com/puriice/godwit/internal/config"
-	"github.com/puriice/godwit/internal/migration"
-	"github.com/puriice/godwit/internal/runner"
+	"github.com/puriice/godwit/internal/app"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 type screen int
@@ -28,16 +27,16 @@ const maxLog = 200
 type (
 	statusMsg struct {
 		target string
-		items  []runner.Item
+		items  []domain.Item
 		err    error
 	}
 	progressMsg struct {
 		target string
-		ev     runner.Event
+		ev     domain.Event
 	}
 	runDoneMsg struct {
 		target string
-		dir    runner.Direction
+		dir    domain.Direction
 		n      int
 		err    error
 	}
@@ -49,7 +48,7 @@ type (
 
 // targetState is everything the UI knows about one target at runtime.
 type targetState struct {
-	items   []runner.Item
+	items   []domain.Item
 	loaded  bool
 	loading bool
 	running bool
@@ -61,39 +60,40 @@ type targetState struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	proj   *config.Project
+	svc    *app.Service
 	screen screen
 	prev   screen // screen to return to when a form closes
 	cursor int    // targets list
 	mcur   int    // migrations list
 	notice string
 
-	migs   []*migration.Migration
-	migErr error
-	states map[string]*targetState
+	migCount int // migration definitions found, for display
+	migErr   error
+	states   map[string]*targetState
 
 	form       *huh.Form
 	formTitle  string
 	onFormDone func(m *Model) tea.Cmd
 	// credQueue holds targets still missing a password at startup.
-	credQueue []config.Target
+	credQueue []domain.Target
 
 	width, height int
 }
 
-// New creates the model for a loaded project.
-func New(p *config.Project) *Model {
-	m := &Model{proj: p, states: map[string]*targetState{}, width: 80, height: 24}
+// New creates the model on top of the application service.
+func New(svc *app.Service) *Model {
+	m := &Model{svc: svc, states: map[string]*targetState{}, width: 80, height: 24}
 	m.reloadMigrations()
-	for _, t := range p.Targets {
+	for _, t := range svc.Targets() {
 		m.states[t.Name] = &targetState{}
 	}
-	m.credQueue = p.MissingPasswords()
+	m.credQueue = svc.TargetsMissingPassword()
 	return m
 }
 
 func (m *Model) reloadMigrations() {
-	m.migs, m.migErr = migration.Load(m.proj.MigrationsPath())
+	migs, err := m.svc.Migrations()
+	m.migCount, m.migErr = len(migs), err
 }
 
 func (m *Model) state(name string) *targetState {
@@ -105,12 +105,12 @@ func (m *Model) state(name string) *targetState {
 	return st
 }
 
-func (m *Model) targets() []config.Target { return m.proj.Targets }
+func (m *Model) targets() []domain.Target { return m.svc.Targets() }
 
-func (m *Model) currentTarget() (config.Target, bool) {
+func (m *Model) currentTarget() (domain.Target, bool) {
 	ts := m.targets()
 	if m.cursor < 0 || m.cursor >= len(ts) {
-		return config.Target{}, false
+		return domain.Target{}, false
 	}
 	return ts[m.cursor], true
 }
@@ -142,37 +142,31 @@ func (m *Model) refreshAll() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *Model) refresh(t config.Target) tea.Cmd {
+func (m *Model) refresh(t domain.Target) tea.Cmd {
 	st := m.state(t.Name)
 	if st.running {
 		return nil
 	}
-	if _, ok := m.proj.Password(t); !ok {
+	if !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press p to enter it")
 		st.loaded = false
 		return nil
 	}
 	st.loading, st.err = true, nil
-	proj, migs := m.proj, m.migs
+	svc := m.svc
 	return func() tea.Msg {
-		ctx := context.Background()
-		c, err := runner.Open(ctx, proj, t)
-		if err != nil {
-			return statusMsg{target: t.Name, err: err}
-		}
-		defer c.Close()
-		items, err := runner.Status(ctx, c, migs)
+		items, err := svc.Status(context.Background(), t.Name)
 		return statusMsg{target: t.Name, items: items, err: err}
 	}
 }
 
 // run applies or reverts migrations on one target, streaming progress.
-func (m *Model) run(t config.Target, dir runner.Direction, n int) tea.Cmd {
+func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
 	st := m.state(t.Name)
 	if st.running {
 		return nil
 	}
-	if _, ok := m.proj.Password(t); !ok {
+	if !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press p to enter it")
 		return nil
 	}
@@ -180,23 +174,20 @@ func (m *Model) run(t config.Target, dir runner.Direction, n int) tea.Cmd {
 	st.log = append(st.log, fmt.Sprintf("— %s —", dir))
 	ch := make(chan tea.Msg, 64)
 	st.events = ch
-	proj, migs := m.proj, m.migs
+	svc := m.svc
 
 	go func() {
 		defer close(ch)
 		ctx := context.Background()
-		c, err := runner.Open(ctx, proj, t)
-		if err != nil {
-			ch <- runDoneMsg{target: t.Name, dir: dir, err: err}
-			return
-		}
-		defer c.Close()
-		prog := func(e runner.Event) { ch <- progressMsg{target: t.Name, ev: e} }
-		var cnt int
-		if dir == runner.Up {
-			cnt, err = runner.MigrateUp(ctx, c, migs, n, prog)
+		prog := func(e domain.Event) { ch <- progressMsg{target: t.Name, ev: e} }
+		var (
+			cnt int
+			err error
+		)
+		if dir == domain.Up {
+			cnt, err = svc.Up(ctx, t.Name, n, prog)
 		} else {
-			cnt, err = runner.MigrateDown(ctx, c, migs, n, prog)
+			cnt, err = svc.Down(ctx, t.Name, n, prog)
 		}
 		ch <- runDoneMsg{target: t.Name, dir: dir, n: cnt, err: err}
 	}()
@@ -240,7 +231,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "clearing dirty flag: " + msg.err.Error()
 			return m, nil
 		}
-		if t, ok := m.proj.Target(msg.target); ok {
+		if t, ok := m.svc.Target(msg.target); ok {
 			return m, m.refresh(t)
 		}
 		return m, nil
@@ -254,7 +245,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			st.addLog(fmt.Sprintf("✓ %d migration(s) %s", msg.n, doneWord(msg.dir)))
 		}
-		if t, ok := m.proj.Target(msg.target); ok {
+		if t, ok := m.svc.Target(msg.target); ok {
 			return m, m.refresh(t)
 		}
 		return m, nil
@@ -289,20 +280,20 @@ func (m *Model) View() string {
 	}
 }
 
-func formatEvent(e runner.Event) string {
+func formatEvent(e domain.Event) string {
 	label := fmt.Sprintf("%d_%s", e.Version, e.Name)
 	switch e.Phase {
-	case runner.Started:
+	case domain.Started:
 		return fmt.Sprintf("… %s %s", e.Direction, label)
-	case runner.Done:
+	case domain.Done:
 		return fmt.Sprintf("✓ %s %s", e.Direction, label)
 	default:
 		return fmt.Sprintf("✗ %s %s: %v", e.Direction, label, e.Err)
 	}
 }
 
-func doneWord(d runner.Direction) string {
-	if d == runner.Up {
+func doneWord(d domain.Direction) string {
+	if d == domain.Up {
 		return "applied"
 	}
 	return "reverted"

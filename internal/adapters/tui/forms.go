@@ -9,9 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
-	"github.com/puriice/godwit/internal/config"
-	"github.com/puriice/godwit/internal/driver"
-	"github.com/puriice/godwit/internal/migration"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 func formWidth(w int) int {
@@ -91,7 +89,7 @@ func (m *Model) viewForm() string {
 }
 
 // openCredentialForm asks for a target's password.
-func (m *Model) openCredentialForm(t config.Target) tea.Cmd {
+func (m *Model) openCredentialForm(t domain.Target) tea.Cmd {
 	var (
 		pw      string
 		persist = true
@@ -105,7 +103,7 @@ func (m *Model) openCredentialForm(t config.Target) tea.Cmd {
 		huh.NewConfirm().Title("Save to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&persist),
 	))
 	return m.openForm("Credentials", f, func(m *Model) tea.Cmd {
-		if err := m.proj.SetPassword(t, pw, persist); err != nil {
+		if err := m.svc.SetPassword(t.Name, pw, persist); err != nil {
 			m.notice = "saving password: " + err.Error()
 		}
 		if next := m.nextCredentialForm(); next != nil {
@@ -116,24 +114,28 @@ func (m *Model) openCredentialForm(t config.Target) tea.Cmd {
 }
 
 // openTargetForm adds a target, or edits existing when non-nil.
-func (m *Model) openTargetForm(existing *config.Target) tea.Cmd {
-	in := newTargetInput(existing)
+func (m *Model) openTargetForm(existing *domain.Target) tea.Cmd {
+	in := newTargetInput(m.svc.Drivers(), existing)
 	title := "Add target"
 	if existing != nil {
 		title = "Edit target " + existing.Name
 	}
-	return m.openForm(title, huh.NewForm(huh.NewGroup(in.fields(m.proj, existing != nil)...)), func(m *Model) tea.Cmd {
-		t := in.apply(m.proj, existing)
+	nameTaken := func(name string) bool { _, ok := m.svc.Target(name); return ok }
+	fields := in.fields(m.svc.Drivers(), nameTaken, existing != nil)
+	return m.openForm(title, huh.NewForm(huh.NewGroup(fields...)), func(m *Model) tea.Cmd {
+		t := in.target()
+		var err error
 		if existing == nil {
-			m.cursor = len(m.proj.Targets) - 1
+			err = m.svc.AddTarget(t, in.pw, in.persist)
+		} else {
+			err = m.svc.UpdateTarget(t, in.pw, in.persist)
 		}
-		if err := m.proj.Save(); err != nil {
-			m.notice = "saving config: " + err.Error()
+		if err != nil {
+			m.notice = "saving target: " + err.Error()
+			return nil
 		}
-		if in.pw != "" {
-			if err := m.proj.SetPassword(t, in.pw, in.persist); err != nil {
-				m.notice = "saving password: " + err.Error()
-			}
+		if existing == nil {
+			m.cursor = len(m.targets()) - 1
 		}
 		m.state(t.Name) // ensure state exists
 		return m.refresh(t)
@@ -143,15 +145,15 @@ func (m *Model) openTargetForm(existing *config.Target) tea.Cmd {
 // targetInput is the editable state behind the add/edit target form. It is
 // shared by the TUI and by `godwit init`.
 type targetInput struct {
-	t       config.Target
+	t       domain.Target
 	port    string
 	pw      string
 	persist bool
 }
 
-func newTargetInput(existing *config.Target) *targetInput {
+func newTargetInput(drivers []string, existing *domain.Target) *targetInput {
 	in := &targetInput{
-		t:       config.Target{Driver: driver.Names()[0], Host: "localhost"},
+		t:       domain.Target{Driver: drivers[0], Host: "localhost"},
 		persist: true,
 	}
 	if existing != nil {
@@ -165,7 +167,7 @@ func newTargetInput(existing *config.Target) *targetInput {
 
 // fields builds the form fields. When editing, the name is fixed (the
 // password key derives from it) and an empty password means "keep current".
-func (in *targetInput) fields(p *config.Project, editing bool) []huh.Field {
+func (in *targetInput) fields(drivers []string, nameTaken func(string) bool, editing bool) []huh.Field {
 	var fields []huh.Field
 	pwTitle := "Password"
 	if editing {
@@ -176,14 +178,14 @@ func (in *targetInput) fields(p *config.Project, editing bool) []huh.Field {
 			if s == "" {
 				return errors.New("required")
 			}
-			if _, dup := p.Target(s); dup {
+			if nameTaken(s) {
 				return errors.New("a target with this name exists")
 			}
 			return nil
 		}))
 	}
 	return append(fields,
-		huh.NewSelect[string]().Title("Driver").Options(huh.NewOptions(driver.Names()...)...).Value(&in.t.Driver),
+		huh.NewSelect[string]().Title("Driver").Options(huh.NewOptions(drivers...)...).Value(&in.t.Driver),
 		huh.NewInput().Title("Host").Value(&in.t.Host).Validate(required),
 		huh.NewInput().Title("Port").Description("blank = driver default").Value(&in.port).Validate(func(s string) error {
 			if s == "" {
@@ -201,20 +203,11 @@ func (in *targetInput) fields(p *config.Project, editing bool) []huh.Field {
 	)
 }
 
-// apply adds the target to p (or replaces existing) in memory only.
-func (in *targetInput) apply(p *config.Project, existing *config.Target) config.Target {
+// target returns the domain target described by the form values.
+func (in *targetInput) target() domain.Target {
 	t := in.t
 	t.Name = strings.TrimSpace(t.Name)
 	t.Port, _ = strconv.Atoi(in.port)
-	if existing == nil {
-		p.Targets = append(p.Targets, t)
-		return t
-	}
-	for i := range p.Targets {
-		if p.Targets[i].Name == existing.Name {
-			p.Targets[i] = t
-		}
-	}
 	return t
 }
 
@@ -226,7 +219,7 @@ func required(s string) error {
 }
 
 // openPasswordForm re-prompts for one target's password (key p).
-func (m *Model) openPasswordForm(t config.Target) tea.Cmd {
+func (m *Model) openPasswordForm(t domain.Target) tea.Cmd {
 	var (
 		pw      string
 		persist = true
@@ -236,7 +229,7 @@ func (m *Model) openPasswordForm(t config.Target) tea.Cmd {
 		huh.NewConfirm().Title("Save to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&persist),
 	))
 	return m.openForm("Credentials", f, func(m *Model) tea.Cmd {
-		if err := m.proj.SetPassword(t, pw, persist); err != nil {
+		if err := m.svc.SetPassword(t.Name, pw, persist); err != nil {
 			m.notice = "saving password: " + err.Error()
 		}
 		return m.refresh(t)
@@ -264,7 +257,7 @@ func (m *Model) openNewMigrationForm() tea.Cmd {
 		huh.NewInput().Title("Migration name").Description("letters, digits, _ and -").Value(&name).Validate(required),
 	))
 	return m.openForm("New migration", f, func(m *Model) tea.Cmd {
-		path, err := migration.Create(m.proj.MigrationsPath(), strings.TrimSpace(name))
+		path, err := m.svc.CreateMigration(name)
 		if err != nil {
 			m.notice = err.Error()
 			return nil

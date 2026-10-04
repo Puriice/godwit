@@ -1,6 +1,7 @@
-// Package driver connects godwit to database targets and records migration
-// state in each target's godwit_migration table.
-package driver
+// Package sqldb is the driven adapter that talks to real databases. It
+// implements app.DatabaseFactory for PostgreSQL and MySQL/MariaDB and records
+// migration state in each target's godwit_migration table.
+package sqldb
 
 import (
 	"context"
@@ -10,64 +11,53 @@ import (
 	"strings"
 	"time"
 
-	"github.com/puriice/godwit/internal/config"
-	"github.com/puriice/godwit/internal/migration"
+	"github.com/puriice/godwit/internal/app"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 // Table is the name of the state table created in every target.
 const Table = "godwit_migration"
 
-// Record is one row of godwit_migration.
-type Record struct {
-	Version    int64
-	Name       string
-	Checksum   string
-	AppliedAt  time.Time
-	DurationMS int64
-	Dirty      bool
+// opener opens a connection for one database engine.
+type opener func(ctx context.Context, t domain.Target, password string) (*conn, error)
+
+// Factory implements app.DatabaseFactory.
+type Factory struct {
+	openers map[string]opener
 }
 
-// Conn is an open connection to one target.
-type Conn interface {
-	Close() error
-	// EnsureTable creates godwit_migration if it does not exist.
-	EnsureTable(ctx context.Context) error
-	// Lock takes a target-wide migration lock; call the returned func to release.
-	Lock(ctx context.Context) (unlock func() error, err error)
-	Applied(ctx context.Context) ([]Record, error)
-	Apply(ctx context.Context, m *migration.Migration) error
-	Revert(ctx context.Context, m *migration.Migration) error
-	// ClearDirty removes the dirty flag of a version after manual repair.
-	ClearDirty(ctx context.Context, version int64) error
+// NewFactory returns a Factory supporting every built-in driver.
+func NewFactory() *Factory {
+	return &Factory{openers: map[string]opener{
+		"postgres": openPostgres,
+		"mysql":    openMySQL,
+	}}
 }
 
-// Driver opens connections for one database engine.
-type Driver interface {
-	Name() string
-	Open(ctx context.Context, t config.Target, password string) (Conn, error)
+var _ app.DatabaseFactory = (*Factory)(nil)
+
+// Drivers lists the supported driver names, sorted.
+func (f *Factory) Drivers() []string {
+	names := make([]string, 0, len(f.openers))
+	for n := range f.openers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
-var registry = map[string]Driver{}
-
-func register(d Driver) { registry[d.Name()] = d }
-
-// Get returns the driver registered under name (case-insensitive).
-func Get(name string) (Driver, error) {
-	d, ok := registry[strings.ToLower(name)]
+// Open connects to a target using the driver named by t.Driver
+// (case-insensitive).
+func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (app.Database, error) {
+	open, ok := f.openers[strings.ToLower(t.Driver)]
 	if !ok {
-		return nil, fmt.Errorf("unknown driver %q (available: %s)", name, strings.Join(Names(), ", "))
+		return nil, fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(f.Drivers(), ", "))
 	}
-	return d, nil
-}
-
-// Names lists registered driver names.
-func Names() []string {
-	out := make([]string, 0, len(registry))
-	for n := range registry {
-		out = append(out, n)
+	c, err := open(ctx, t, password)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(out)
-	return out
+	return c, nil
 }
 
 // dialect holds the engine-specific parts of the shared SQL implementation.
@@ -113,16 +103,16 @@ func (c *conn) Lock(ctx context.Context) (func() error, error) {
 	}, nil
 }
 
-func (c *conn) Applied(ctx context.Context) ([]Record, error) {
+func (c *conn) Applied(ctx context.Context) ([]domain.Record, error) {
 	rows, err := c.db.QueryContext(ctx,
 		"SELECT version, name, checksum, applied_at, duration_ms, dirty FROM "+Table+" ORDER BY version")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Record
+	var out []domain.Record
 	for rows.Next() {
-		var r Record
+		var r domain.Record
 		if err := rows.Scan(&r.Version, &r.Name, &r.Checksum, &r.AppliedAt, &r.DurationMS, &r.Dirty); err != nil {
 			return nil, err
 		}
@@ -135,7 +125,7 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func (c *conn) insert(ctx context.Context, e execer, m *migration.Migration, dirty bool, ms int64) error {
+func (c *conn) insert(ctx context.Context, e execer, m *domain.Migration, dirty bool, ms int64) error {
 	p := c.d.placeholder
 	_, err := e.ExecContext(ctx,
 		fmt.Sprintf("INSERT INTO %s (version, name, checksum, duration_ms, dirty) VALUES (%s, %s, %s, %s, %s)",
@@ -170,11 +160,11 @@ func execAll(ctx context.Context, e execer, stmts []string) error {
 	return nil
 }
 
-func (c *conn) Apply(ctx context.Context, m *migration.Migration) error {
-	stmts := migration.StatementsFor(m.Parsed.Up, c.d.name)
+func (c *conn) Apply(ctx context.Context, m *domain.Migration) error {
+	stmts := m.UpSQL(c.d.name)
 	start := time.Now()
 
-	if c.d.transactional && !m.Parsed.NoTransaction {
+	if c.d.transactional && !m.NoTransaction {
 		tx, err := c.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -204,13 +194,13 @@ func (c *conn) Apply(ctx context.Context, m *migration.Migration) error {
 	return err
 }
 
-func (c *conn) Revert(ctx context.Context, m *migration.Migration) error {
-	stmts := migration.StatementsFor(m.Parsed.Down, c.d.name)
+func (c *conn) Revert(ctx context.Context, m *domain.Migration) error {
+	stmts := m.DownSQL(c.d.name)
 	if len(stmts) == 0 {
 		return fmt.Errorf("migration %d_%s has no Down statements for %s", m.Version, m.Name, c.d.name)
 	}
 
-	if c.d.transactional && !m.Parsed.NoTransaction {
+	if c.d.transactional && !m.NoTransaction {
 		tx, err := c.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err

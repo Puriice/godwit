@@ -1,4 +1,4 @@
-package driver
+package sqldb
 
 import (
 	"context"
@@ -9,18 +9,12 @@ import (
 
 	mysqldrv "github.com/go-sql-driver/mysql"
 
-	"github.com/puriice/godwit/internal/config"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 const mysqlLockName = "godwit_migration_lock"
 
-type mysql struct{}
-
-func init() { register(mysql{}) }
-
-func (mysql) Name() string { return "mysql" }
-
-func mysqlDSN(t config.Target, password string) string {
+func mysqlDSN(t domain.Target, password string) string {
 	port := t.Port
 	if port == 0 {
 		port = 3306
@@ -36,7 +30,7 @@ func mysqlDSN(t config.Target, password string) string {
 	return cfg.FormatDSN()
 }
 
-func (mysql) Open(ctx context.Context, t config.Target, password string) (Conn, error) {
+func openMySQL(ctx context.Context, t domain.Target, password string) (*conn, error) {
 	db, err := sql.Open("mysql", mysqlDSN(t, password))
 	if err != nil {
 		return nil, err

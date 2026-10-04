@@ -8,8 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/puriice/godwit/internal/config"
-	"github.com/puriice/godwit/internal/runner"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 var (
@@ -54,30 +53,30 @@ func (m *Model) footer(help string) string {
 	return b.String()
 }
 
-func summarize(items []runner.Item) string {
-	counts := map[runner.State]int{}
+func summarize(items []domain.Item) string {
+	counts := map[domain.State]int{}
 	for _, it := range items {
 		counts[it.State]++
 	}
-	parts := []string{fmt.Sprintf("%d applied", counts[runner.Applied]+counts[runner.Modified])}
-	if n := counts[runner.Pending]; n > 0 {
+	parts := []string{fmt.Sprintf("%d applied", counts[domain.Applied]+counts[domain.Modified])}
+	if n := counts[domain.Pending]; n > 0 {
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d pending", n)))
 	} else {
 		parts = append(parts, "up to date")
 	}
-	if n := counts[runner.Dirty]; n > 0 {
+	if n := counts[domain.Dirty]; n > 0 {
 		parts = append(parts, errStyle.Render(fmt.Sprintf("%d dirty", n)))
 	}
-	if n := counts[runner.Modified]; n > 0 {
+	if n := counts[domain.Modified]; n > 0 {
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d modified", n)))
 	}
-	if n := counts[runner.Missing]; n > 0 {
+	if n := counts[domain.Missing]; n > 0 {
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d missing", n)))
 	}
 	return strings.Join(parts, " · ")
 }
 
-func targetLine(t config.Target) string {
+func targetLine(t domain.Target) string {
 	port := ""
 	if t.Port != 0 {
 		port = fmt.Sprintf(":%d", t.Port)
@@ -112,7 +111,7 @@ func (m *Model) viewTargets() string {
 			fmt.Sprintf("%-16s %-9s", t.Name, t.Driver), dimStyle.Render(targetLine(t)))
 		fmt.Fprintf(&b, "    %s\n", status)
 	}
-	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", len(m.migs), m.proj.MigrationsPath())))
+	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
 	return b.String() + m.footer("↑/↓ select · enter open · a add · e edit · x delete · p password · u apply all targets · r refresh · n new migration · q quit")
 }
 
@@ -146,11 +145,11 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		if t, ok := m.currentTarget(); ok {
 			return m, m.openConfirm(fmt.Sprintf("Remove target %q and its saved password? (the database is untouched)", t.Name), func(m *Model) tea.Cmd {
-				if err := m.proj.RemoveTarget(t.Name); err != nil {
+				if err := m.svc.RemoveTarget(t.Name); err != nil {
 					m.notice = err.Error()
 				}
 				delete(m.states, t.Name)
-				if m.cursor >= len(m.proj.Targets) && m.cursor > 0 {
+				if m.cursor >= len(m.targets()) && m.cursor > 0 {
 					m.cursor--
 				}
 				return nil
@@ -168,7 +167,7 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openConfirm(fmt.Sprintf("Apply all pending migrations to all %d target(s)?", n), func(m *Model) tea.Cmd {
 			var cmds []tea.Cmd
 			for _, t := range m.targets() {
-				cmds = append(cmds, m.run(t, runner.Up, 0))
+				cmds = append(cmds, m.run(t, domain.Up, 0))
 			}
 			return tea.Batch(cmds...)
 		})
@@ -256,15 +255,15 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mcur++
 		}
 	case "u":
-		return m, m.run(t, runner.Up, 0)
+		return m, m.run(t, domain.Up, 0)
 	case "s":
-		return m, m.run(t, runner.Up, 1)
+		return m, m.run(t, domain.Up, 1)
 	case "d":
 		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
-			return m.run(t, runner.Down, 1)
+			return m.run(t, domain.Down, 1)
 		})
 	case "c":
-		if m.mcur < len(st.items) && st.items[m.mcur].State == runner.Dirty {
+		if m.mcur < len(st.items) && st.items[m.mcur].State == domain.Dirty {
 			it := st.items[m.mcur]
 			return m, m.openConfirm(fmt.Sprintf("Clear dirty flag on %d_%s? Only do this after repairing the target by hand.", it.Version, it.Name), func(m *Model) tea.Cmd {
 				return m.clearDirty(t, it.Version)
@@ -280,30 +279,25 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) clearDirty(t config.Target, version int64) tea.Cmd {
-	proj := m.proj
+func (m *Model) clearDirty(t domain.Target, version int64) tea.Cmd {
+	svc := m.svc
 	return func() tea.Msg {
-		ctx := context.Background()
-		c, err := runner.Open(ctx, proj, t)
-		if err == nil {
-			err = runner.ClearDirty(ctx, c, version)
-			c.Close()
-		}
+		err := svc.ClearDirty(context.Background(), t.Name, version)
 		return clearedMsg{target: t.Name, err: err}
 	}
 }
 
-func badge(s runner.State) string {
+func badge(s domain.State) string {
 	switch s {
-	case runner.Applied:
+	case domain.Applied:
 		return okStyle.Render("applied")
-	case runner.Pending:
+	case domain.Pending:
 		return warnStyle.Render("pending")
-	case runner.Modified:
+	case domain.Modified:
 		return warnStyle.Render("applied (file modified)")
-	case runner.Dirty:
+	case domain.Dirty:
 		return errStyle.Render("DIRTY")
-	case runner.Missing:
+	case domain.Missing:
 		return errStyle.Render("applied (file missing)")
 	}
 	return string(s)

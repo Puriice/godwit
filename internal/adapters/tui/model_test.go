@@ -1,29 +1,51 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/puriice/godwit/internal/config"
-	"github.com/puriice/godwit/internal/runner"
+	"github.com/puriice/godwit/internal/adapters/filestore"
+	"github.com/puriice/godwit/internal/adapters/fsmigrations"
+	"github.com/puriice/godwit/internal/app"
+	"github.com/puriice/godwit/internal/domain"
 )
 
-func testModel(t *testing.T) *Model {
+// noDBs is a DatabaseFactory for tests that never reach a database.
+type noDBs struct{}
+
+func (noDBs) Drivers() []string { return []string{"mysql", "postgres"} }
+func (noDBs) Open(context.Context, domain.Target, string) (app.Database, error) {
+	return nil, errors.New("no database in tests")
+}
+
+// testService builds a Service on a temp project dir with the given targets.
+func testService(t *testing.T, targets ...domain.Target) *app.Service {
 	t.Helper()
-	p, err := config.Load(t.TempDir())
+	root := t.TempDir()
+	svc, err := app.New(filestore.New(root), fsmigrations.New(root), noDBs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Targets = []config.Target{
-		{Name: "a", Driver: "postgres", Host: "h", Database: "d", User: "u"},
-		{Name: "b", Driver: "mysql", Host: "h", Database: "d", User: "u"},
+	for _, tg := range targets {
+		if err := svc.AddTarget(tg, "", false); err != nil {
+			t.Fatal(err)
+		}
 	}
+	return svc
+}
+
+func testModel(t *testing.T) *Model {
+	t.Helper()
 	t.Setenv("GODWIT_A_PASSWORD", "x")
 	t.Setenv("GODWIT_B_PASSWORD", "x")
-	return New(p)
+	return New(testService(t,
+		domain.Target{Name: "a", Driver: "postgres", Host: "h", Database: "d", User: "u"},
+		domain.Target{Name: "b", Driver: "mysql", Host: "h", Database: "d", User: "u"},
+	))
 }
 
 func key(s string) tea.KeyMsg {
@@ -58,9 +80,7 @@ func TestNavigation(t *testing.T) {
 }
 
 func TestMissingPasswordQueuesCredentialForm(t *testing.T) {
-	p, _ := config.Load(t.TempDir())
-	p.Targets = []config.Target{{Name: "nopw", Driver: "mysql"}}
-	m := New(p)
+	m := New(testService(t, domain.Target{Name: "nopw", Driver: "mysql"}))
 	if len(m.credQueue) != 1 {
 		t.Fatalf("credQueue = %d", len(m.credQueue))
 	}
@@ -80,15 +100,15 @@ func TestRunMessagesUpdateState(t *testing.T) {
 	st.running = true
 	st.events = make(chan tea.Msg)
 
-	m.Update(statusMsg{target: "a", items: []runner.Item{
-		{Version: 1, Name: "x", State: runner.Applied},
-		{Version: 2, Name: "y", State: runner.Pending},
+	m.Update(statusMsg{target: "a", items: []domain.Item{
+		{Version: 1, Name: "x", State: domain.Applied},
+		{Version: 2, Name: "y", State: domain.Pending},
 	}})
 	if !st.loaded || !strings.Contains(summarize(st.items), "1 pending") {
 		t.Errorf("summary = %q", summarize(st.items))
 	}
 
-	m.Update(runDoneMsg{target: "a", dir: runner.Up, err: errors.New("boom")})
+	m.Update(runDoneMsg{target: "a", dir: domain.Up, err: errors.New("boom")})
 	if st.running || st.runErr == nil {
 		t.Errorf("running=%v runErr=%v", st.running, st.runErr)
 	}

@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/puriice/godwit/internal/config"
 )
 
 func TestTargetFormFitsShortTerminalAtTop(t *testing.T) {
@@ -25,28 +23,26 @@ func TestTargetFormFitsShortTerminalAtTop(t *testing.T) {
 	}
 }
 
-func TestTargetInputApply(t *testing.T) {
-	p, _ := config.Load(t.TempDir())
+func TestTargetInput(t *testing.T) {
+	drivers := []string{"mysql", "postgres"}
 
-	in := newTargetInput(nil)
-	if in.t.Driver == "" || in.t.Host != "localhost" || !in.persist {
+	in := newTargetInput(drivers, nil)
+	if in.t.Driver != "mysql" || in.t.Host != "localhost" || !in.persist {
 		t.Fatalf("defaults: %+v", in)
 	}
 	in.t.Name, in.port = "  prod ", "5432"
-	got := in.apply(p, nil)
-	if got.Name != "prod" || got.Port != 5432 || len(p.Targets) != 1 {
-		t.Fatalf("add: %+v targets=%+v", got, p.Targets)
+	got := in.target()
+	if got.Name != "prod" || got.Port != 5432 {
+		t.Fatalf("target: %+v", got)
 	}
 
-	// Editing replaces in place, keeps the name, and prefills the port.
-	existing := p.Targets[0]
-	ed := newTargetInput(&existing)
-	if ed.port != "5432" {
-		t.Errorf("port prefill = %q", ed.port)
+	// Editing prefills every field, including the port.
+	ed := newTargetInput(drivers, &got)
+	if ed.port != "5432" || ed.t.Name != "prod" {
+		t.Errorf("prefill: %+v", ed)
 	}
 	ed.t.Host = "db.example.com"
-	ed.apply(p, &existing)
-	if len(p.Targets) != 1 || p.Targets[0].Host != "db.example.com" {
-		t.Errorf("edit: %+v", p.Targets)
+	if h := ed.target().Host; h != "db.example.com" {
+		t.Errorf("host = %q", h)
 	}
 }

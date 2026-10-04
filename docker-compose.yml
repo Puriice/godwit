@@ -2,7 +2,7 @@
 #   docker compose up -d
 #   $env:GODWIT_TEST_POSTGRES="postgres://godwit:godwit@localhost:55432/godwit"
 #   $env:GODWIT_TEST_MYSQL="godwit:godwit@tcp(localhost:53306)/godwit"
-#   go test ./internal/runner -run Integration -v
+#   go test ./internal/adapters/sqldb -run Integration -v
 services:
   postgres:
     image: postgres:17

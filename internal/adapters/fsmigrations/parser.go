@@ -1,40 +1,28 @@
-// Package migration discovers and parses godwit migration files.
-package migration
+// Package fsmigrations is the driven adapter that reads migrations from .sql
+// files on disk, in godwit's goose-style annotated format.
+package fsmigrations
 
 import (
 	"bufio"
 	"fmt"
 	"strings"
+
+	"github.com/puriice/godwit/internal/domain"
 )
 
-// DriverAll marks statements that run on every driver.
-const DriverAll = "all"
-
-const prefix = "-- +godwit"
+const (
+	prefix    = "-- +godwit"
+	driverAll = domain.DriverAll
+)
 
 // Statement is a single SQL statement scoped to a driver.
-type Statement struct {
-	Driver string // lower-case driver name, or DriverAll
-	SQL    string
-}
+type Statement = domain.Statement
 
 // Parsed is the result of parsing one migration file.
 type Parsed struct {
 	Up            []Statement
 	Down          []Statement
 	NoTransaction bool
-}
-
-// StatementsFor returns the statements applicable to driver, in file order.
-func StatementsFor(stmts []Statement, driver string) []string {
-	driver = strings.ToLower(driver)
-	var out []string
-	for _, s := range stmts {
-		if s.Driver == DriverAll || s.Driver == driver {
-			out = append(out, s.SQL)
-		}
-	}
-	return out
 }
 
 type section int
@@ -50,7 +38,7 @@ func Parse(src string) (*Parsed, error) {
 	p := &Parsed{}
 	var (
 		sec     = secNone
-		driver  = DriverAll
+		driver  = driverAll
 		block   bool // inside StatementBegin/End
 		buf     strings.Builder
 		lineNum int
@@ -105,7 +93,7 @@ func Parse(src string) (*Parsed, error) {
 				} else {
 					sec = secDown
 				}
-				driver = DriverAll
+				driver = driverAll
 			case "statementbegin":
 				if sec == secNone {
 					return nil, fmt.Errorf("line %d: StatementBegin outside Up/Down", lineNum)

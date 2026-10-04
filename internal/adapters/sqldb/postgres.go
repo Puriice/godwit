@@ -1,4 +1,4 @@
-package driver
+package sqldb
 
 import (
 	"context"
@@ -10,19 +10,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx"
 
-	"github.com/puriice/godwit/internal/config"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 // pgLockKey is the advisory lock id ("godwit" as bytes, fits in int64).
 const pgLockKey int64 = 0x676f64776974
 
-type postgres struct{}
-
-func init() { register(postgres{}) }
-
-func (postgres) Name() string { return "postgres" }
-
-func postgresDSN(t config.Target, password string) string {
+func postgresDSN(t domain.Target, password string) string {
 	port := t.Port
 	if port == 0 {
 		port = 5432
@@ -41,7 +35,7 @@ func postgresDSN(t config.Target, password string) string {
 	return u.String()
 }
 
-func (postgres) Open(ctx context.Context, t config.Target, password string) (Conn, error) {
+func openPostgres(ctx context.Context, t domain.Target, password string) (*conn, error) {
 	db, err := sql.Open("pgx", postgresDSN(t, password))
 	if err != nil {
 		return nil, err
