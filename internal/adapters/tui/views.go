@@ -154,6 +154,7 @@ func (m *Model) viewTargets() string {
 		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor), label, dimStyle.Render(targetLine(t)))
 		fmt.Fprintf(&b, "    %s\n", status)
 	}
+	b.WriteString(m.viewProcesses())
 	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
 	return b.String() + m.footer(targetsHelp)
 }

@@ -90,6 +90,12 @@ type targetState struct {
 	// ahead of it; they show as running whatever the database says.
 	queue map[int64]bool
 	redo  bool // the run is a redo: its migration is reverted, then applied
+
+	// What the processes panel shows about the latest run: kept after it
+	// ends, until the next one starts.
+	job         domain.Job
+	pid         int // the background worker's process id; 0 when unknown
+	total, done int // migrations the run announced, and how many it completed
 }
 
 // markRunning shows the migrations of the current run as running. Without it
@@ -117,6 +123,8 @@ func (st *targetState) track(queued, finished []int64, keepFinished bool) {
 		st.queue[v] = true
 	}
 	if !keepFinished {
+		st.total += len(queued)
+		st.done += len(finished)
 		for _, v := range finished {
 			delete(st.queue, v)
 		}
@@ -313,6 +321,7 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 	}
 	st.running, st.err, st.runErr = true, nil, nil
 	st.queue, st.redo = nil, job.Op == domain.OpRedo
+	st.job, st.pid, st.total, st.done = job, 0, 0, 0
 	if st.redo {
 		st.track([]int64{job.Version}, nil, true)
 	}
@@ -431,6 +440,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		st.running, st.err, st.runErr = true, nil, nil
 		st.queue, st.redo = nil, msg.st.Job.Op == domain.OpRedo
+		st.job, st.pid, st.total, st.done = msg.st.Job, msg.st.Pid, 0, 0
 		st.addLog(fmt.Sprintf("— %s (still running in the background) —", msg.st.Job.Direction()))
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
@@ -458,6 +468,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
 		}
+		st.pid = msg.st.Pid
 		st.trackJob(msg.st)
 		st.markRunning()
 		var refresh tea.Cmd

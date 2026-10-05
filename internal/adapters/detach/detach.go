@@ -150,7 +150,7 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	if from < 0 || from > int64(len(data)) {
 		from = 0
 	}
-	st := app.RunStatus{Job: job, Next: from}
+	st := app.RunStatus{Job: job, Pid: pid, Next: from}
 	data = data[from:]
 	if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
 		st.Next += int64(i + 1)
