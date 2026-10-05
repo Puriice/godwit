@@ -147,16 +147,6 @@ complete working plugin built on it is in
 [examples/driver-jsonfile](examples/driver-jsonfile). To change how plugins work
 inside godwit, see [docs/plugin-internals.md](docs/plugin-internals.md).
 
-## TUI keys
-
-Targets list: `↑/↓` select, `↵` open, `a` add, `e` edit, `x` delete,
-`t` enable/disable, `p` password, `u` apply all targets, `r` refresh,
-`n` new migration, `q` quit.
-
-Migrations screen: `u` apply all, `s` apply next, `d` roll back last,
-`↵` migrate up or down to the selected migration, `R` redo selected,
-`c` clear dirty, `t` enable/disable, `r` refresh, `n` new, `esc` back.
-
 ## How migrations run
 
 - **State:** each applied migration is recorded with its version, a SHA-256
