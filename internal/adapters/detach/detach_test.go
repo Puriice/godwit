@@ -135,6 +135,34 @@ func TestStopWithoutARunFails(t *testing.T) {
 	}
 }
 
+func TestRunsDirectoryIgnoresItself(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
+	// Queueing creates the lock file, and with it the directory's .gitignore.
+	if _, err := r.Start(domain.Job{Target: "prod", Op: domain.OpDown}); err != nil {
+		t.Fatal(err)
+	}
+	gi, err := os.ReadFile(filepath.Join(r.root, ".godwit", "runs", ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gi), "*") || !strings.Contains(string(gi), "!.gitignore") {
+		t.Errorf(".gitignore = %q", gi)
+	}
+
+	// A .gitignore the user already edited is left alone.
+	custom := filepath.Join(r.root, ".godwit", "runs", ".gitignore")
+	if err := os.WriteFile(custom, []byte("custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(domain.Job{Target: "prod", Op: domain.OpDown}); err != nil {
+		t.Fatal(err)
+	}
+	if gi, _ := os.ReadFile(custom); string(gi) != "custom\n" {
+		t.Errorf("overwrote an existing .gitignore: %q", gi)
+	}
+}
+
 func TestStartQueuesBehindARunningWorker(t *testing.T) {
 	r := &Runner{root: t.TempDir()}
 	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
