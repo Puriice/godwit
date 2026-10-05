@@ -9,6 +9,9 @@ migration files can serve both.
 - **State lives in each database**, in a `godwit_migration` table, so every
   target tracks its own progress.
 - **TUI and CLI:** every action in the TUI also exists as a command, for scripts and CI (except the debug panel).
+- **Runs survive quitting:** the TUI runs migrations in a detached worker process, so
+  quitting (even closing the terminal) doesn't interrupt them. Reopen the TUI to see
+  the target still running. Progress is logged in `.godwit/runs/<target>.log`.
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 

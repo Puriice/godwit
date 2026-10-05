@@ -4,8 +4,10 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -59,6 +61,19 @@ type (
 		to     domain.State
 		err    error
 	}
+	// bgPollMsg carries a background run's log, read while following it.
+	bgPollMsg struct {
+		target string
+		st     app.RunStatus
+		err    error
+	}
+	// bgAttachMsg carries the log found at startup, which may belong to a run
+	// that an earlier TUI session started.
+	bgAttachMsg struct {
+		target string
+		st     app.RunStatus
+		err    error
+	}
 )
 
 // targetState is everything the UI knows about one target at runtime.
@@ -76,6 +91,7 @@ type targetState struct {
 // Model is the root Bubble Tea model.
 type Model struct {
 	svc    *app.Service
+	bg     app.BackgroundRunner // nil runs migrations inside this process
 	screen screen
 	prev   screen // screen to return to when a form closes
 	cursor int    // targets list
@@ -160,6 +176,7 @@ func (m *Model) refreshAll() tea.Cmd {
 	for _, t := range m.targets() {
 		cmds = append(cmds, m.refresh(t))
 	}
+	cmds = append(cmds, m.attachRuns())
 	return tea.Batch(cmds...)
 }
 
@@ -212,62 +229,45 @@ func (m *Model) toggleTarget(t domain.Target) tea.Cmd {
 
 // run applies (Up) or reverts (Down) n migrations on one target.
 func (m *Model) run(t domain.Target, dir domain.Direction, n int) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, dir, func(ctx context.Context, prog app.Progress) (int, error) {
-		if dir == domain.Up {
-			return svc.Up(ctx, t.Name, n, prog)
-		}
-		return svc.Down(ctx, t.Name, n, prog)
-	})
+	op := domain.OpUp
+	if dir == domain.Down {
+		op = domain.OpDown
+	}
+	return m.startRun(t, domain.Job{Target: t.Name, Op: op, N: n})
 }
 
 // upTo applies the pending migrations up to and including version.
 func (m *Model) upTo(t domain.Target, version int64) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, domain.Up, func(ctx context.Context, prog app.Progress) (int, error) {
-		return svc.UpTo(ctx, t.Name, version, prog)
-	})
+	return m.startRun(t, domain.Job{Target: t.Name, Op: domain.OpUpTo, Version: version})
 }
 
 // downTo rolls back everything newer than version.
 func (m *Model) downTo(t domain.Target, version int64) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, domain.Down, func(ctx context.Context, prog app.Progress) (int, error) {
-		return svc.DownTo(ctx, t.Name, version, prog)
-	})
+	return m.startRun(t, domain.Job{Target: t.Name, Op: domain.OpDownTo, Version: version})
 }
 
 // downBatch rolls back the latest apply run.
 func (m *Model) downBatch(t domain.Target) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, domain.Down, func(ctx context.Context, prog app.Progress) (int, error) {
-		return svc.DownBatch(ctx, t.Name, prog)
-	})
+	return m.startRun(t, domain.Job{Target: t.Name, Op: domain.OpBatch})
 }
 
 // applyOnly applies just one pending migration.
 func (m *Model) applyOnly(t domain.Target, version int64) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, domain.Up, func(ctx context.Context, prog app.Progress) (int, error) {
-		return svc.ApplyOnly(ctx, t.Name, version, prog)
-	})
+	return m.startRun(t, domain.Job{Target: t.Name, Op: domain.OpOnly, Version: version})
 }
 
 // redo reverts one applied migration and applies it again.
 func (m *Model) redo(t domain.Target, version int64) tea.Cmd {
-	svc := m.svc
-	return m.startRun(t, domain.Redo, func(ctx context.Context, prog app.Progress) (int, error) {
-		if err := svc.Redo(ctx, t.Name, version, prog); err != nil {
-			return 0, err
-		}
-		return 1, nil
-	})
+	return m.startRun(t, domain.Job{Target: t.Name, Op: domain.OpRedo, Version: version})
 }
 
-// startRun runs work in the background, streaming its progress events and a
-// final runDoneMsg back as messages. It does nothing for a target that is
-// disabled, already running, or missing its password.
-func (m *Model) startRun(t domain.Target, dir domain.Direction, work func(context.Context, app.Progress) (int, error)) tea.Cmd {
+// startRun performs job, streaming its progress events and a final
+// runDoneMsg back as messages. With a background runner the job runs in a
+// separate process that keeps going if the TUI exits; otherwise in-process.
+// It does nothing for a target that is disabled, already running, or missing
+// its password.
+func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
+	dir := job.Direction()
 	st := m.state(t.Name)
 	if st.running || t.Disabled {
 		return nil
@@ -278,16 +278,61 @@ func (m *Model) startRun(t domain.Target, dir domain.Direction, work func(contex
 	}
 	st.running, st.err, st.runErr = true, nil, nil
 	st.log = append(st.log, fmt.Sprintf("— %s —", dir))
+	if m.bg != nil {
+		if err := m.bg.Start(job); err != nil {
+			st.running, st.runErr = false, err
+			st.addLog("✗ " + err.Error())
+			return nil
+		}
+		return pollRun(m.bg, t.Name, 0)
+	}
 	ch := make(chan tea.Msg, 64)
 	st.events = ch
 
+	svc := m.svc
 	go func() {
 		defer close(ch)
 		prog := func(e domain.Event) { ch <- progressMsg{target: t.Name, ev: e} }
-		n, err := work(context.Background(), prog)
+		n, err := svc.RunJob(context.Background(), job, prog)
 		ch <- runDoneMsg{target: t.Name, dir: dir, n: n, err: err}
 	}()
 	return waitMsg(ch)
+}
+
+// pollInterval is how often a background run's log is re-read.
+const pollInterval = 300 * time.Millisecond
+
+// pollRun waits, then reads target's background log from offset from.
+func pollRun(bg app.BackgroundRunner, target string, from int64) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(pollInterval)
+		st, err := bg.Poll(target, from)
+		return bgPollMsg{target: target, st: st, err: err}
+	}
+}
+
+// attachRuns finds background runs that outlived an earlier TUI session and
+// picks up following them.
+func (m *Model) attachRuns() tea.Cmd {
+	if m.bg == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, t := range m.targets() {
+		target := t.Name
+		cmds = append(cmds, func() tea.Msg {
+			st, err := m.bg.Poll(target, 0)
+			return bgAttachMsg{target: target, st: st, err: err}
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+// WithBackground makes runs happen in detached worker processes, so they keep
+// going after the TUI exits and are picked up again the next time it opens.
+func (m *Model) WithBackground(bg app.BackgroundRunner) *Model {
+	m.bg = bg
+	return m
 }
 
 func waitMsg(ch chan tea.Msg) tea.Cmd {
@@ -321,6 +366,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		st := m.state(msg.target)
 		st.addLog(formatEvent(msg.ev))
 		return m, waitMsg(st.events)
+
+	case bgAttachMsg:
+		st := m.state(msg.target)
+		if st.running || msg.err != nil || !msg.st.Active {
+			return m, nil
+		}
+		st.running, st.err, st.runErr = true, nil, nil
+		st.addLog(fmt.Sprintf("— %s (still running in the background) —", msg.st.Job.Direction()))
+		for _, l := range msg.st.Lines {
+			st.addLog(l)
+		}
+		return m, pollRun(m.bg, msg.target, msg.st.Next)
+
+	case bgPollMsg:
+		st := m.state(msg.target)
+		if !st.running {
+			return m, nil
+		}
+		done := func(err error) (tea.Model, tea.Cmd) {
+			return m.Update(runDoneMsg{target: msg.target, dir: msg.st.Job.Direction(), n: msg.st.Count, err: err})
+		}
+		if msg.err != nil {
+			return done(msg.err)
+		}
+		for _, l := range msg.st.Lines {
+			st.addLog(l)
+		}
+		switch {
+		case msg.st.Done && msg.st.Err != "":
+			return done(errors.New(msg.st.Err))
+		case msg.st.Done:
+			return done(nil)
+		case !msg.st.Active:
+			return done(errors.New("background run stopped without finishing; check the target's state"))
+		}
+		return m, pollRun(m.bg, msg.target, msg.st.Next)
 
 	case pluginDoneMsg:
 		m.pbusy = ""
