@@ -228,7 +228,9 @@ func (m *Model) queuedDetail(name string, st *targetState, idx, width int) strin
 	j := st.pending[idx]
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", titleStyle.Render(truncate(name+" · queued", max(width, 1))))
-	row := func(label, value string) { fmt.Fprintf(&b, "%s%s\n", dimStyle.Render(fmt.Sprintf("%-10s", label)), value) }
+	row := func(label, value string) {
+		fmt.Fprintf(&b, "%s%s\n", dimStyle.Render(fmt.Sprintf("%-10s", label)), value)
+	}
 	row("operation", string(j.Op))
 	if j.Version != 0 {
 		row("version", fmt.Sprint(j.Version))
@@ -246,7 +248,9 @@ func (m *Model) queuedDetail(name string, st *targetState, idx, width int) strin
 func (m *Model) processDetail(name string, st *targetState, width int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", titleStyle.Render(truncate(name, max(width, 1))))
-	row := func(label, value string) { fmt.Fprintf(&b, "%s%s\n", dimStyle.Render(fmt.Sprintf("%-10s", label)), value) }
+	row := func(label, value string) {
+		fmt.Fprintf(&b, "%s%s\n", dimStyle.Render(fmt.Sprintf("%-10s", label)), value)
+	}
 	row("operation", string(st.job.Op))
 	row("status", st.processStatus())
 	row("process", m.where(st))

@@ -10,13 +10,13 @@ import (
 )
 
 type stubRunner struct {
-	stopped   []string
-	cleared   []string
-	dequeued  []domain.Job
+	stopped    []string
+	cleared    []string
+	dequeued   []domain.Job
 	dequeuedAt []int
-	dequeueOK bool // Dequeue finds the job; otherwise it fails
-	started []domain.Job
-	queued  bool // Start reports the job as queued behind a run
+	dequeueOK  bool // Dequeue finds the job; otherwise it fails
+	started    []domain.Job
+	queued     bool // Start reports the job as queued behind a run
 }
 
 func (s *stubRunner) ClearQueue(target string) (int, error) {
