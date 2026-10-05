@@ -58,3 +58,14 @@ type Database interface {
 	// ClearDirty removes a version's dirty flag after manual repair.
 	ClearDirty(ctx context.Context, version int64) error
 }
+
+// StateForcer is an optional Database capability: rewriting a migration's
+// recorded state without running it, for debugging. Only the state table
+// changes, never the schema. Databases that do not implement it (plugin
+// drivers) cannot have their state forced.
+type StateForcer interface {
+	// ForceState makes m's record match state, which is Pending (no record),
+	// Applied (a clean record) or Dirty. m carries the version, name, checksum
+	// and batch to write when a record has to be created.
+	ForceState(ctx context.Context, m *domain.Migration, state domain.State) error
+}

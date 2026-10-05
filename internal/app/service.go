@@ -731,3 +731,66 @@ func (s *Service) ClearDirty(ctx context.Context, target string, version int64) 
 	defer db.Close()
 	return db.ClearDirty(ctx, version)
 }
+
+// ForceState rewrites one migration's recorded state on a target without
+// running it: pending removes its record, applied writes a clean one, dirty
+// marks it as a failed run. Only the godwit_migration table changes; the schema
+// does not. It is a debugging tool for states that are hard to reach otherwise.
+func (s *Service) ForceState(ctx context.Context, target string, version int64, state domain.State) (err error) {
+	switch state {
+	case domain.Pending, domain.Applied, domain.Dirty:
+	default:
+		return fmt.Errorf("cannot force state %q (use pending, applied or dirty)", state)
+	}
+	migs, err := s.Migrations()
+	if err != nil {
+		return err
+	}
+	db, t, err := s.open(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	forcer, ok := db.(StateForcer)
+	if !ok {
+		return fmt.Errorf("the %s driver cannot force a migration's state", t.Driver)
+	}
+	if err := db.EnsureTable(ctx); err != nil {
+		return err
+	}
+	unlock, err := db.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if uerr := unlock(); err == nil {
+			err = uerr
+		}
+	}()
+
+	recs, err := db.Applied(ctx)
+	if err != nil {
+		return err
+	}
+	items := merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) })
+	var it *domain.Item
+	for i := range items {
+		if items[i].Version == version {
+			it = &items[i]
+		}
+	}
+	if it == nil {
+		return fmt.Errorf("no migration with version %d", version)
+	}
+	m := domain.Migration{Version: it.Version, Name: it.Name, Batch: nextBatch(items)}
+	switch {
+	case it.Migration != nil:
+		m.Checksum = it.Migration.Checksum
+	case it.Record != nil:
+		m.Checksum = it.Record.Checksum
+	}
+	if it.Record != nil {
+		m.Batch = it.Record.Batch
+	}
+	return forcer.ForceState(ctx, &m, state)
+}

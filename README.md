@@ -8,7 +8,7 @@ migration files can serve both.
 - **One file per migration**, with optional per-engine SQL blocks.
 - **State lives in each database**, in a `godwit_migration` table, so every
   target tracks its own progress.
-- **TUI and CLI:** every action in the TUI also exists as a command, for scripts and CI.
+- **TUI and CLI:** every action in the TUI also exists as a command, for scripts and CI (except the debug panel).
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 
@@ -225,6 +225,12 @@ inside godwit, see [docs/plugin-internals.md](docs/plugin-internals.md).
   leaves the earlier ones applied.
 - **Redo:** the roll-back and re-apply are separate steps. If the re-apply fails,
   the migration stays rolled back.
+- **Debug panel (TUI only):** on a target's migration list, `←`/`→` switch between
+  the list and a debug panel. It follows the cursor and shows what the target has
+  recorded for that migration. `p`, `d` and `a` force it to pending, dirty or
+  applied, after a confirmation. Forcing rewrites only the `godwit_migration`
+  record and never runs SQL or changes the schema, so use it to reproduce or
+  repair states. Plugin drivers do not support it.
 
 ## Development
 

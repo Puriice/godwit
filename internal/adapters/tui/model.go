@@ -53,6 +53,12 @@ type (
 		target string
 		err    error
 	}
+	forcedMsg struct {
+		target string
+		label  string
+		to     domain.State
+		err    error
+	}
 )
 
 // targetState is everything the UI knows about one target at runtime.
@@ -74,6 +80,7 @@ type Model struct {
 	prev   screen // screen to return to when a form closes
 	cursor int    // targets list
 	mcur   int    // migrations list
+	mdebug bool   // the migrations screen shows its debug panel
 	fcur   int    // migration files list
 	pcur   int    // plugins list
 	notice string
@@ -329,6 +336,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "clearing dirty flag: " + msg.err.Error()
 			return m, nil
 		}
+		if t, ok := m.svc.Target(msg.target); ok {
+			return m, m.refresh(t)
+		}
+		return m, nil
+
+	case forcedMsg:
+		st := m.state(msg.target)
+		if msg.err != nil {
+			st.addLog("✗ debug: " + msg.err.Error())
+			m.notice = "forcing state: " + msg.err.Error()
+			return m, nil
+		}
+		st.addLog(fmt.Sprintf("• debug: forced %s to %s", msg.label, msg.to))
 		if t, ok := m.svc.Target(msg.target); ok {
 			return m, m.refresh(t)
 		}

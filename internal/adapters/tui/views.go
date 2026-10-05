@@ -45,7 +45,8 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · ↵ migrate to selected · ␣ run only selected · N apply all · n apply next · b roll back · B roll back batch · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
+	debugHelp      = "←/→ switch panel · ↑/↓ select · p force pending · d force dirty · a force applied · r refresh · q back"
+	migrationsHelp = "←/→ switch panel · ↑/↓ select · ↵ migrate to selected · ␣ run only selected · N apply all · n apply next · b roll back · B roll back batch · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -173,7 +174,7 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if _, ok := m.currentTarget(); ok {
-			m.screen, m.mcur = scrMigrations, 0
+			m.screen, m.mcur, m.mdebug = scrMigrations, 0, false
 		}
 	case "a":
 		return m, m.openTargetForm(nil)
@@ -233,6 +234,8 @@ func (m *Model) viewMigrations() string {
 	st := m.state(t.Name)
 	var b strings.Builder
 	b.WriteString(m.header(fmt.Sprintf("%s (%s %s)", t.Name, t.Driver, targetLine(t))))
+	b.WriteString(m.migrationTabs())
+	b.WriteRune('\n')
 
 	switch {
 	case t.Disabled:
@@ -250,9 +253,13 @@ func (m *Model) viewMigrations() string {
 	}
 
 	// Window the list so the log and the (possibly wrapped) footer still fit.
-	foot := m.footer(migrationsHelp)
+	help, detail := migrationsHelp, ""
+	if m.mdebug {
+		help, detail = debugHelp, m.debugDetail(st)
+	}
+	foot := m.footer(help)
 	logLines := min(len(st.log), 6)
-	room := max(m.height-10-logLines-lipgloss.Height(foot), 3)
+	room := max(m.height-11-logLines-lipgloss.Height(foot)-lipgloss.Height(detail), 3)
 	start := 0
 	if m.mcur >= room {
 		start = m.mcur - room + 1
@@ -266,6 +273,7 @@ func (m *Model) viewMigrations() string {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(st.items)-end)))
 		b.WriteRune('\n')
 	}
+	b.WriteString(detail)
 
 	if st.runErr != nil {
 		b.WriteRune('\n')
@@ -297,6 +305,14 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st := m.state(t.Name)
+	switch key.String() {
+	case "left", "h", "right", "l":
+		m.mdebug = !m.mdebug
+		return m, nil
+	}
+	if m.mdebug {
+		return m.updateDebug(t, st, key)
+	}
 	if t.Disabled {
 		switch key.String() {
 		case "N", "n", "b", "enter", " ", "B", "c", "r":

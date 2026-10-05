@@ -21,6 +21,7 @@ type fakeDB struct {
 	lockErr  error
 	reverted []int64
 	closed   int
+	forced   []domain.Migration // what ForceState was asked to write
 }
 
 func newFakeDB() *fakeDB { return &fakeDB{recs: map[int64]*domain.Record{}} }

@@ -370,3 +370,37 @@ func (c *conn) Revert(ctx context.Context, m *domain.Migration) error {
 	}
 	return c.remove(ctx, c.db, m.Version)
 }
+
+var _ app.StateForcer = (*conn)(nil)
+
+// ForceState rewrites m's row in the state table to match state, in one
+// transaction. It never runs the migration's statements.
+func (c *conn) ForceState(ctx context.Context, m *domain.Migration, state domain.State) error {
+	if state != domain.Pending && state != domain.Applied && state != domain.Dirty {
+		return fmt.Errorf("cannot force state %q", state)
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var n int
+	err = tx.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE version = %s", Table, c.d.placeholder(1)), m.Version).Scan(&n)
+	if err != nil {
+		return err
+	}
+	switch {
+	case state == domain.Pending:
+		err = c.remove(ctx, tx, m.Version) // nothing to do when there is no row
+	case n > 0:
+		err = c.setDirty(ctx, tx, m.Version, state == domain.Dirty)
+	default:
+		err = c.insert(ctx, tx, m, state == domain.Dirty, 0)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
