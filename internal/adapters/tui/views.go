@@ -44,7 +44,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
+	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · n new · esc back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -82,6 +82,10 @@ func (m *Model) footer(help string) string {
 func summarize(items []domain.Item) string {
 	counts := map[domain.State]int{}
 	for _, it := range items {
+		if it.State == domain.Pending && it.Disabled {
+			counts["off"]++
+			continue
+		}
 		counts[it.State]++
 	}
 	parts := []string{fmt.Sprintf("%d applied", counts[domain.Applied]+counts[domain.Modified])}
@@ -89,6 +93,9 @@ func summarize(items []domain.Item) string {
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d pending", n)))
 	} else {
 		parts = append(parts, "up to date")
+	}
+	if n := counts["off"]; n > 0 {
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d disabled", n)))
 	}
 	if n := counts[domain.Dirty]; n > 0 {
 		parts = append(parts, errStyle.Render(fmt.Sprintf("%d dirty", n)))
@@ -256,7 +263,7 @@ func (m *Model) viewMigrations() string {
 	end := min(start+room, len(st.items))
 	for i := start; i < end; i++ {
 		it := st.items[i]
-		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.mcur), it.Version, truncate(it.Name, 24), badge(it.State))
+		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.mcur), it.Version, truncate(it.Name, 24), badgeItem(it))
 	}
 	if len(st.items) > end {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(st.items)-end)))
@@ -305,6 +312,22 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = scrTargets
 	case "t":
 		return m, m.toggleTarget(t)
+	case "e":
+		if m.mcur < len(st.items) {
+			it := &st.items[m.mcur]
+			if err := m.svc.SetMigrationEnabled(t.Name, it.Version, it.Disabled); err != nil {
+				m.notice = err.Error()
+				break
+			}
+			if nt, ok := m.svc.Target(t.Name); ok {
+				it.Disabled, it.Reason = m.svc.MigrationSetting(nt, it.Version)
+			}
+			if it.Disabled {
+				m.notice = fmt.Sprintf("disabled %d_%s on %s; it will be skipped when applying", it.Version, it.Name, t.Name)
+			} else {
+				m.notice = fmt.Sprintf("enabled %d_%s on %s", it.Version, it.Name, t.Name)
+			}
+		}
 	case "up", "k":
 		if m.mcur > 0 {
 			m.mcur--
@@ -401,9 +424,13 @@ func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
 	}
 
 	if it.State == domain.Pending {
+		if it.Disabled {
+			m.notice = label + " is disabled on " + t.Name + "; press e to enable it"
+			return nil
+		}
 		pending := 0
 		for _, x := range st.items[:m.mcur+1] {
-			if x.State == domain.Pending {
+			if x.State == domain.Pending && !x.Disabled {
 				pending++
 			}
 		}
@@ -431,6 +458,16 @@ func (m *Model) clearDirty(t domain.Target, version int64) tea.Cmd {
 		err := svc.ClearDirty(context.Background(), t.Name, version)
 		return clearedMsg{target: t.Name, err: err}
 	}
+}
+
+func badgeItem(it domain.Item) string {
+	switch {
+	case it.Disabled:
+		return dimStyle.Render(string(it.State) + " (" + it.Reason + ")")
+	case it.Reason != "":
+		return badge(it.State) + dimStyle.Render(" ("+it.Reason+")")
+	}
+	return badge(it.State)
 }
 
 func badge(s domain.State) string {

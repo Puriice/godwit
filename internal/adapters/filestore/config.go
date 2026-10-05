@@ -37,6 +37,9 @@ type targetJSON struct {
 	User     string            `json:"user"`
 	Params   map[string]string `json:"params,omitempty"`
 	Disabled bool              `json:"disabled,omitempty"`
+
+	DisabledMigrations []int64 `json:"disabledMigrations,omitempty"`
+	EnabledMigrations  []int64 `json:"enabledMigrations,omitempty"`
 }
 
 type pluginJSON struct {
@@ -49,6 +52,8 @@ type configJSON struct {
 	MigrationsDir string       `json:"migrationsDir"`
 	Targets       []targetJSON `json:"targets"`
 	Plugins       []pluginJSON `json:"plugins,omitempty"`
+
+	DisabledMigrations []int64 `json:"disabledMigrations,omitempty"`
 }
 
 // Store implements app.ProjectStore.
@@ -81,6 +86,7 @@ func (s *Store) Load() (domain.Project, error) {
 			return p, fmt.Errorf("%s: %w", configFile, err)
 		}
 		p.MigrationsDir = c.MigrationsDir
+		p.DisabledMigrations = c.DisabledMigrations
 		for _, t := range c.Targets {
 			p.Targets = append(p.Targets, domain.Target(t))
 		}
@@ -109,7 +115,7 @@ func (s *Store) Save(p domain.Project) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return err
 	}
-	c := configJSON{MigrationsDir: p.MigrationsDir, Targets: []targetJSON{}}
+	c := configJSON{MigrationsDir: p.MigrationsDir, Targets: []targetJSON{}, DisabledMigrations: p.DisabledMigrations}
 	for _, t := range p.Targets {
 		c.Targets = append(c.Targets, targetJSON(t))
 	}

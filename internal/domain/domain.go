@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"slices"
 	"strings"
 	"time"
 )
@@ -21,6 +22,11 @@ type Target struct {
 	Params   map[string]string
 	// Disabled targets are skipped by every operation until re-enabled.
 	Disabled bool
+	// DisabledMigrations and EnabledMigrations override the project's default
+	// for single versions on this target: a disabled migration is skipped
+	// while pending. A version is in at most one of the two.
+	DisabledMigrations []int64
+	EnabledMigrations  []int64
 }
 
 // Project is the project-level configuration.
@@ -28,6 +34,21 @@ type Project struct {
 	MigrationsDir string
 	Targets       []Target
 	Plugins       []PluginSpec
+	// DisabledMigrations is the default for every target: these versions are
+	// skipped while pending unless a target overrides it.
+	DisabledMigrations []int64
+}
+
+// MigrationDisabled reports whether version is disabled on t, honouring the
+// target's override before the project default.
+func (p Project) MigrationDisabled(t Target, version int64) bool {
+	switch {
+	case slices.Contains(t.DisabledMigrations, version):
+		return true
+	case slices.Contains(t.EnabledMigrations, version):
+		return false
+	}
+	return slices.Contains(p.DisabledMigrations, version)
 }
 
 // Target returns the named target.
@@ -102,6 +123,11 @@ type Item struct {
 	State     State
 	Migration *Migration // nil when Missing
 	Record    *Record    // nil when Pending
+	// Disabled migrations are skipped when applying to this target.
+	Disabled bool
+	// Reason says where Disabled comes from, or notes an override of the
+	// project default; empty when neither applies.
+	Reason string
 }
 
 // Direction of a migration run.

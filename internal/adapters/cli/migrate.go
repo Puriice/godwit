@@ -133,7 +133,11 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 		}
 		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		for _, it := range items {
-			fmt.Fprintf(w, "%d\t%s\t%s\n", it.Version, it.Name, it.State)
+			note := ""
+			if it.Reason != "" {
+				note = "(" + it.Reason + ")"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", it.Version, it.Name, it.State, note)
 		}
 		return w.Flush()
 	})

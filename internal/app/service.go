@@ -186,6 +186,87 @@ func (s *Service) SetTargetEnabled(name string, enabled bool) error {
 	return s.store.Save(s.project)
 }
 
+// MigrationDisabled reports whether a migration version is disabled on t: the
+// target's own override wins over the project default.
+func (s *Service) MigrationDisabled(t domain.Target, version int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.project.MigrationDisabled(t, version)
+}
+
+// MigrationSetting returns whether a version is disabled on t and why: the
+// reason names the target's own override or the project default, and is empty
+// when the migration is enabled and nothing was overridden.
+func (s *Service) MigrationSetting(t domain.Target, version int64) (disabled bool, reason string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	disabled = s.project.MigrationDisabled(t, version)
+	def := slices.Contains(s.project.DisabledMigrations, version)
+	switch {
+	case disabled && def:
+		return true, "disabled by default"
+	case disabled:
+		return true, "disabled on this target"
+	case def:
+		return false, "enabled on this target, disabled by default"
+	}
+	return false, ""
+}
+
+// MigrationDisabledByDefault reports the project-wide default for a version.
+func (s *Service) MigrationDisabledByDefault(version int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Contains(s.project.DisabledMigrations, version)
+}
+
+// SetMigrationEnabledDefault sets the project-wide default for a version. It
+// does not touch the targets' own overrides, which still win.
+func (s *Service) SetMigrationEnabledDefault(version int64, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slices.Contains(s.project.DisabledMigrations, version) == !enabled {
+		return nil
+	}
+	s.project.DisabledMigrations = withVersion(s.project.DisabledMigrations, version, !enabled)
+	return s.store.Save(s.project)
+}
+
+// SetMigrationEnabled enables or disables one migration version on one target
+// and saves the project. A disabled migration is skipped when applying; it
+// stays listed, and an already applied one can still be rolled back. The
+// choice is stored as an override only when it differs from the project
+// default.
+func (s *Service) SetMigrationEnabled(target string, version int64, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == target })
+	if i < 0 {
+		return fmt.Errorf("no target named %q", target)
+	}
+	t := &s.project.Targets[i]
+	if s.project.MigrationDisabled(*t, version) == !enabled {
+		return nil
+	}
+	def := slices.Contains(s.project.DisabledMigrations, version)
+	t.DisabledMigrations = withVersion(t.DisabledMigrations, version, !enabled && !def)
+	t.EnabledMigrations = withVersion(t.EnabledMigrations, version, enabled && def)
+	return s.store.Save(s.project)
+}
+
+// withVersion returns a sorted copy of list with version present or absent.
+func withVersion(list []int64, version int64, present bool) []int64 {
+	out := slices.DeleteFunc(slices.Clone(list), func(v int64) bool { return v == version })
+	if present {
+		out = append(out, version)
+		slices.Sort(out)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // HasPassword reports whether a password is available for the target.
 func (s *Service) HasPassword(name string) bool {
 	_, ok := s.store.Password(name)
@@ -256,7 +337,7 @@ func (s *Service) Status(ctx context.Context, target string) ([]domain.Item, err
 	if err != nil {
 		return nil, err
 	}
-	db, _, err := s.open(ctx, target)
+	db, t, err := s.open(ctx, target)
 	if err != nil {
 		return nil, err
 	}
@@ -268,10 +349,10 @@ func (s *Service) Status(ctx context.Context, target string) ([]domain.Item, err
 	if err != nil {
 		return nil, err
 	}
-	return merge(migs, recs), nil
+	return merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) }), nil
 }
 
-func merge(migs []*domain.Migration, recs []domain.Record) []domain.Item {
+func merge(migs []*domain.Migration, recs []domain.Record, setting func(int64) (bool, string)) []domain.Item {
 	byVer := make(map[int64]*domain.Record, len(recs))
 	for i := range recs {
 		byVer[recs[i].Version] = &recs[i]
@@ -279,6 +360,7 @@ func merge(migs []*domain.Migration, recs []domain.Record) []domain.Item {
 	var items []domain.Item
 	for _, m := range migs {
 		it := domain.Item{Version: m.Version, Name: m.Name, Migration: m, State: domain.Pending}
+		it.Disabled, it.Reason = setting(m.Version)
 		if r, ok := byVer[m.Version]; ok {
 			it.Record = r
 			switch {
@@ -312,7 +394,7 @@ func (s *Service) lockedStatus(ctx context.Context, target string) (db Database,
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	db, _, err = s.open(ctx, target)
+	db, t, err := s.open(ctx, target)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -339,7 +421,7 @@ func (s *Service) lockedStatus(ctx context.Context, target string) (db Database,
 		release() //nolint:errcheck
 		return nil, nil, nil, err
 	}
-	items = merge(migs, recs)
+	items = merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) })
 	for _, it := range items {
 		if it.State == domain.Dirty {
 			release() //nolint:errcheck
@@ -406,7 +488,7 @@ func (s *Service) execute(ctx context.Context, target string, dir domain.Directi
 func pendingItems(items []domain.Item) []domain.Item {
 	var out []domain.Item
 	for _, it := range items {
-		if it.State == domain.Pending {
+		if it.State == domain.Pending && !it.Disabled {
 			out = append(out, it)
 		}
 	}
@@ -471,6 +553,9 @@ func (s *Service) UpTo(ctx context.Context, target string, version int64, prog P
 		}
 		if sel.State != domain.Pending {
 			return nil, fmt.Errorf("%d_%s is already %s; nothing to apply up to it", sel.Version, sel.Name, sel.State)
+		}
+		if sel.Disabled {
+			return nil, fmt.Errorf("%d_%s is disabled on %s; enable it first", sel.Version, sel.Name, target)
 		}
 		var todo []domain.Item
 		for _, it := range pendingItems(items) {
