@@ -363,7 +363,7 @@ func TestPanelCycling(t *testing.T) {
 	m := testModel(t)
 	left, right := tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyRight}
 
-	for _, want := range []screen{scrFiles, scrPlugins, scrTargets} {
+	for _, want := range []screen{scrFiles, scrProcesses, scrPlugins, scrTargets} {
 		m.Update(right)
 		if m.screen != want {
 			t.Fatalf("right: screen = %v, want %v", m.screen, want)
