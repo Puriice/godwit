@@ -104,6 +104,11 @@ type targetState struct {
 	cancelling  bool               // a cancel was requested; the run has not stopped yet
 	cancelled   bool               // the latest run ended because it was cancelled
 	cancel      context.CancelFunc // cancels an in-process run; nil otherwise
+	pending     []domain.Job       // jobs queued behind the run, oldest first
+	// waitPid is the worker that handed over to the next queued job: the
+	// TUI keeps following the target until a different worker shows up.
+	waitPid int
+	waits   int // polls spent waiting for that
 }
 
 // begin resets what is tracked about a run, for one that is starting or has
@@ -335,8 +340,11 @@ func (m *Model) redo(t domain.Target, version int64) tea.Cmd {
 func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 	dir := job.Direction()
 	st := m.state(t.Name)
-	if st.running || t.Disabled {
+	if t.Disabled {
 		return nil
+	}
+	if st.running {
+		return m.enqueue(t, job)
 	}
 	if m.svc.NeedsPassword(t.Name) && !m.svc.HasPassword(t.Name) {
 		st.err = fmt.Errorf("no password; press e to edit the target and enter it")
@@ -349,7 +357,7 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 	}
 	st.log = append(st.log, fmt.Sprintf("— %s —", dir))
 	if m.bg != nil {
-		if err := m.bg.Start(job); err != nil {
+		if _, err := m.bg.Start(job); err != nil {
 			st.running, st.runErr = false, err
 			st.addLog("✗ " + err.Error())
 			return nil
@@ -371,6 +379,47 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 	}()
 	return waitMsg(ch)
 }
+
+// enqueue queues job behind the run the target already has. The run starts it
+// when it ends well; a failed or cancelled run drops it.
+func (m *Model) enqueue(t domain.Target, job domain.Job) tea.Cmd {
+	st := m.state(t.Name)
+	if m.bg == nil {
+		m.notice = "a run is in progress on " + t.Name
+		return nil
+	}
+	queued, err := m.bg.Start(job)
+	switch {
+	case err != nil:
+		m.notice = "queueing: " + err.Error()
+	case queued:
+		st.pending = append(st.pending, job)
+		st.addLog(fmt.Sprintf("＋ queued %s", jobLabel(job)))
+		m.notice = fmt.Sprintf("queued %s behind the run on %s", jobLabel(job), t.Name)
+	default:
+		// The run ended just before the job was handed over, so the job started
+		// on its own. Follow it as the worker that handed over would have.
+		st.waitPid, st.waits = st.pid, 0
+		st.addLog(fmt.Sprintf("＋ started %s", jobLabel(job)))
+	}
+	return nil
+}
+
+// jobLabel is a short description of a job: "up -n 2", "redo 7".
+func jobLabel(j domain.Job) string {
+	switch {
+	case j.Version != 0:
+		return fmt.Sprintf("%s %d", j.Op, j.Version)
+	case j.N != 0:
+		return fmt.Sprintf("%s -n %d", j.Op, j.N)
+	}
+	return string(j.Op)
+}
+
+// maxHandoverPolls bounds the polls (one per pollInterval) spent waiting for
+// the worker that takes over after a run, which waits a moment before
+// starting.
+const maxHandoverPolls = 50
 
 // trackJob feeds a background run's announcements into the queue. A redo is
 // not queued by the run, so its one migration is queued here.
@@ -465,6 +514,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		st.running, st.err, st.runErr = true, nil, nil
 		st.begin(msg.st.Job, msg.st.Pid)
+		st.pending = msg.st.Pending
 		st.addLog(fmt.Sprintf("— %s (still running in the background) —", msg.st.Job.Direction()))
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
@@ -489,9 +539,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return done(msg.err)
 		}
+		if st.waitPid != 0 {
+			// The run ended and handed over: the log is the old worker's until
+			// a different worker has started the next job.
+			if msg.st.Job.Op == "" || msg.st.Pid == st.waitPid {
+				if st.waits++; st.waits > maxHandoverPolls {
+					return done(errors.New("the queued run did not start; check the target's state"))
+				}
+				return m, pollRun(m.bg, msg.target, 0)
+			}
+			st.waitPid, st.waits = 0, 0
+			st.begin(msg.st.Job, msg.st.Pid)
+			st.addLog(fmt.Sprintf("— %s (from the queue) —", msg.st.Job.Direction()))
+		}
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
 		}
+		st.pending = msg.st.Pending
 		st.pid, st.cancelling = msg.st.Pid, msg.st.Cancelling
 		st.trackJob(msg.st)
 		st.markRunning()
@@ -502,6 +566,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch {
+		case msg.st.Done && msg.st.More && msg.st.Err == "":
+			// Ended well and hands over to the next queued job: show this run
+			// as finished and keep following the target.
+			st.addLog(fmt.Sprintf("✓ %d migration(s) %s", msg.st.Count, doneWord(msg.st.Job.Direction())))
+			st.waitPid, st.waits = msg.st.Pid, 0
+			if t, ok := m.svc.Target(msg.target); ok {
+				refresh = m.refresh(t)
+			}
+			return m, tea.Batch(refresh, pollRun(m.bg, msg.target, 0))
 		case msg.st.Done && msg.st.Err != "":
 			return done(errors.New(msg.st.Err))
 		case msg.st.Done:
@@ -546,6 +619,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runDoneMsg:
 		st := m.state(msg.target)
 		st.running, st.events, st.queue, st.cancel = false, nil, nil, nil
+		st.pending, st.waitPid, st.waits = nil, 0, 0
 		st.cancelled = msg.cancelled || (st.cancelling && msg.err != nil)
 		st.cancelling = false
 		if msg.err != nil {

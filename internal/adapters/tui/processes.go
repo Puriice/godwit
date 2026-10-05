@@ -205,6 +205,13 @@ func (m *Model) processDetail(name string, st *targetState, width int) string {
 	if st.runErr != nil {
 		row("error", errStyle.Render(truncate(firstLine(st.runErr.Error()), max(width-10, 10))))
 	}
+	if len(st.pending) > 0 {
+		labels := make([]string, len(st.pending))
+		for i, j := range st.pending {
+			labels[i] = jobLabel(j)
+		}
+		row("queued", truncate(strings.Join(labels, ", "), max(width-10, 10)))
+	}
 
 	if versions := st.runVersions(); len(versions) > 0 {
 		current := int64(-1)

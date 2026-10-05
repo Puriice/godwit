@@ -8,9 +8,16 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-type stubRunner struct{ stopped []string }
+type stubRunner struct {
+	stopped []string
+	started []domain.Job
+	queued  bool // Start reports the job as queued behind a run
+}
 
-func (*stubRunner) Start(domain.Job) error                    { return nil }
+func (s *stubRunner) Start(j domain.Job) (bool, error) {
+	s.started = append(s.started, j)
+	return s.queued, nil
+}
 func (*stubRunner) LogPath(t string) string                   { return "runs/" + t + ".log" }
 func (*stubRunner) Poll(string, int64) (app.RunStatus, error) { return app.RunStatus{}, nil }
 func (s *stubRunner) Stop(t string) error                     { s.stopped = append(s.stopped, t); return nil }
@@ -164,6 +171,79 @@ func TestCancelNeedsARunningProcess(t *testing.T) {
 	m.Update(key("x"))
 	if m.screen == scrForm || len(bg.stopped) != 0 || !strings.Contains(m.notice, "no run in progress") {
 		t.Errorf("screen=%v stopped=%v notice=%q", m.screen, bg.stopped, m.notice)
+	}
+}
+
+func TestStartingAJobWhileRunningQueuesIt(t *testing.T) {
+	m, bg := processesModel(t)
+	bg.queued = true
+	a, _ := m.svc.Target("a")
+	m.redo(a, 7)
+	st := m.state("a")
+	if len(bg.started) != 1 || bg.started[0].Op != domain.OpRedo {
+		t.Fatalf("started = %v", bg.started)
+	}
+	if !st.running || st.job.Op != domain.OpUp {
+		t.Errorf("the running job was disturbed: running=%v job=%v", st.running, st.job)
+	}
+	if len(st.pending) != 1 || !strings.Contains(m.notice, "queued redo 7") {
+		t.Errorf("pending=%v notice=%q", st.pending, m.notice)
+	}
+	m.screen = scrProcesses
+	if v := m.viewProcesses(); !strings.Contains(v, "redo 7") {
+		t.Errorf("the queue is not shown:\n%s", v)
+	}
+}
+
+func TestRunHandsOverToTheQueuedJob(t *testing.T) {
+	m, _ := processesModel(t)
+	st := m.state("a")
+
+	// The run ends well and the next queued job takes over in a new worker.
+	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true, Count: 3,
+	}})
+	if !st.running || st.waitPid != 4242 {
+		t.Fatalf("running=%v waitPid=%d", st.running, st.waitPid)
+	}
+
+	// Until another worker appears, the old one's log is not mistaken for it.
+	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true, Count: 3,
+	}})
+	m.Update(bgPollMsg{target: "a"})
+	if !st.running || st.waitPid != 4242 || st.runErr != nil {
+		t.Fatalf("running=%v waitPid=%d err=%v", st.running, st.waitPid, st.runErr)
+	}
+
+	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+		Job: domain.Job{Target: "a", Op: domain.OpRedo, Version: 2}, Pid: 5151, Active: true,
+		Lines: []string{"… down 2_y"},
+	}})
+	if !st.running || st.waitPid != 0 || st.pid != 5151 || st.job.Op != domain.OpRedo {
+		t.Errorf("running=%v waitPid=%d pid=%d job=%v", st.running, st.waitPid, st.pid, st.job)
+	}
+
+	// ... and it ends like any other run.
+	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+		Job: domain.Job{Target: "a", Op: domain.OpRedo, Version: 2}, Pid: 5151, Done: true, Count: 1,
+	}})
+	if st.running {
+		t.Error("still running after the last job")
+	}
+}
+
+func TestHandoverThatNeverStartsIsReported(t *testing.T) {
+	m, _ := processesModel(t)
+	st := m.state("a")
+	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true,
+	}})
+	for range maxHandoverPolls + 1 {
+		m.Update(bgPollMsg{target: "a"})
+	}
+	if st.running || st.runErr == nil || !strings.Contains(st.runErr.Error(), "did not start") {
+		t.Errorf("running=%v err=%v", st.running, st.runErr)
 	}
 }
 

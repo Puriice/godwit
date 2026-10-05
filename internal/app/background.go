@@ -24,6 +24,12 @@ type RunStatus struct {
 	// stopped yet.
 	Cancelling bool
 
+	// Pending are the jobs waiting behind this run, oldest first.
+	Pending []domain.Job
+	// More is set on a successful run that is handing over to the next queued
+	// job: another run follows in a new worker.
+	More bool
+
 	Done      bool   // the worker finished and recorded its outcome
 	Cancelled bool   // ... because it was cancelled
 	Count     int    // migrations completed
@@ -34,7 +40,10 @@ type RunStatus struct {
 // this one exits, and reports on them. Poll also finds runs started by an
 // earlier process. A target without a run reports a zero RunStatus.
 type BackgroundRunner interface {
-	Start(job domain.Job) error
+	// Start runs job in a new worker. When the target already has a run it
+	// queues the job behind it instead and reports queued: the worker starts
+	// it when the run ends well, and drops it if the run fails or is cancelled.
+	Start(job domain.Job) (queued bool, err error)
 	// Stop asks the target's run to cancel. It returns at once; Poll reports
 	// Cancelling until the run has stopped, then Cancelled.
 	Stop(target string) error
