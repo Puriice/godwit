@@ -44,6 +44,10 @@ type BackgroundRunner interface {
 	// queues the job behind it instead and reports queued: the worker starts
 	// it when the run ends well, and drops it if the run fails or is cancelled.
 	Start(job domain.Job) (queued bool, err error)
+	// Dequeue removes the job at position index (from 0, oldest first) of the
+	// target's queue, provided it is still job. It fails when the queue has
+	// changed since, for instance because that job has started.
+	Dequeue(target string, index int, job domain.Job) error
 	// Stop asks the target's run to cancel. It returns at once; Poll reports
 	// Cancelling until the run has stopped, then Cancelled.
 	Stop(target string) error

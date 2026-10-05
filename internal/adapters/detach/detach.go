@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -149,6 +150,21 @@ func (r *Runner) writeQueue(target string, jobs []domain.Job) error {
 		b.WriteByte('\n')
 	}
 	return os.WriteFile(file, []byte(b.String()), 0o644)
+}
+
+// Dequeue removes the job at position index of target's queue if it is still
+// j. The position matters: a queue may hold the same job more than once.
+func (r *Runner) Dequeue(target string, index int, j domain.Job) error {
+	unlock, err := r.lock(target)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	queue := r.readQueue(target)
+	if index < 0 || index >= len(queue) || queue[index] != j {
+		return fmt.Errorf("the queue of %s has changed (that job may have started); check it and try again", target)
+	}
+	return r.writeQueue(target, slices.Delete(queue, index, index+1))
 }
 
 // busy reports whether target has a live worker, even one that has already

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,7 +11,7 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-const processesHelp = "←/→ switch panel · ↑/↓ select · x cancel run · q quit"
+const processesHelp = "←/→ switch panel · ↑/↓ select · x cancel run / remove queued job · q quit"
 
 const (
 	barWidth      = 20
@@ -36,12 +37,24 @@ func (st *targetState) processStatus() string {
 	return okStyle.Render("finished")
 }
 
-// processTargets are the targets that have a run, in target order.
-func (m *Model) processTargets() []domain.Target {
-	var out []domain.Target
+// processItem is one selectable line of the processes list: a target's run,
+// or one of the jobs queued behind it.
+type processItem struct {
+	target domain.Target
+	queued int // index into the target's queue; -1 for the run itself
+}
+
+// processItems lists the runs in target order, each followed by its queue.
+func (m *Model) processItems() []processItem {
+	var out []processItem
 	for _, t := range m.targets() {
-		if m.state(t.Name).hasProcesses() {
-			out = append(out, t)
+		st := m.state(t.Name)
+		if !st.hasProcesses() {
+			continue
+		}
+		out = append(out, processItem{t, -1})
+		for i := range st.pending {
+			out = append(out, processItem{t, i})
 		}
 	}
 	return out
@@ -114,34 +127,46 @@ func (st *targetState) migrationStatus(v int64, current bool) string {
 func (m *Model) viewProcesses() string {
 	var b strings.Builder
 	b.WriteString(m.header(m.tabs()))
-	ts := m.processTargets()
-	if len(ts) == 0 {
+	items := m.processItems()
+	if len(items) == 0 {
 		b.WriteString(dimStyle.Render("No background runs. Start one from a target (u apply all, or open it) or with: godwit migrate up --detach"))
 		b.WriteRune('\n')
 		return b.String() + m.footer(processesHelp)
 	}
-	m.prcur = min(m.prcur, len(ts)-1)
-	t := ts[m.prcur]
+	m.prcur = min(m.prcur, len(items)-1)
+	sel := items[m.prcur]
+	t := sel.target
 	st := m.state(t.Name)
 
 	// Like the debug panel: the list on the left, the selected run's details
 	// in a second column, or below the list on a terminal too narrow for two.
 	detailW, wide := m.processColumns()
 	var list strings.Builder
-	for i, t := range ts {
-		list.WriteString(m.processRow(pointer(i == m.prcur), t.Name, m.state(t.Name)))
+	for i, it := range items {
+		ptr := pointer(i == m.prcur)
+		if it.queued < 0 {
+			list.WriteString(m.processRow(ptr, it.target.Name, m.state(it.target.Name)))
+		} else {
+			list.WriteString(queuedRow(ptr, m.state(it.target.Name).pending[it.queued]))
+		}
 		list.WriteRune('\n')
 	}
 	listText := strings.TrimRight(list.String(), "\n")
+	detailOf := func(width int) string {
+		if sel.queued >= 0 {
+			return m.queuedDetail(t.Name, st, sel.queued, width)
+		}
+		return m.processDetail(t.Name, st, width)
+	}
 	if wide {
-		detail := m.processDetail(t.Name, st, detailW)
+		detail := detailOf(detailW)
 		cols := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(processRowWidth).Render(listText), strings.Repeat(" ", sideGap), detail)
 		b.WriteString(cols)
 		b.WriteRune('\n')
 	} else {
 		b.WriteString(listText)
 		b.WriteString("\n\n")
-		b.WriteString(m.processDetail(t.Name, st, m.width))
+		b.WriteString(detailOf(m.width))
 		b.WriteRune('\n')
 	}
 
@@ -191,6 +216,32 @@ func (m *Model) processRow(ptr, name string, st *targetState) string {
 		dimStyle.Render(st.progress())
 }
 
+// queuedRow is one job waiting behind a run, indented under it.
+func queuedRow(ptr string, j domain.Job) string {
+	const labelW = processNameW + processOpW - 3
+	return ptr + dimStyle.Render("  ↳ ") + padRight(truncate(jobLabel(j), labelW), labelW) + " " +
+		padRight(dimStyle.Render("queued"), processStatusW)
+}
+
+// queuedDetail describes the idx'th job waiting behind a target's run.
+func (m *Model) queuedDetail(name string, st *targetState, idx, width int) string {
+	j := st.pending[idx]
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", titleStyle.Render(truncate(name+" · queued", max(width, 1))))
+	row := func(label, value string) { fmt.Fprintf(&b, "%s%s\n", dimStyle.Render(fmt.Sprintf("%-10s", label)), value) }
+	row("operation", string(j.Op))
+	if j.Version != 0 {
+		row("version", fmt.Sprint(j.Version))
+	}
+	if j.N != 0 {
+		row("count", fmt.Sprint(j.N))
+	}
+	row("status", dimStyle.Render("queued"))
+	row("position", fmt.Sprintf("%d of %d", idx+1, len(st.pending)))
+	fmt.Fprintf(&b, "\n%s", dimStyle.Render("Starts when the run before it ends well. It is dropped if that run fails or is cancelled. x removes it."))
+	return lipgloss.NewStyle().Width(max(width, 1)).Render(b.String())
+}
+
 // processDetail describes one run, for the column beside the list.
 func (m *Model) processDetail(name string, st *targetState, width int) string {
 	var b strings.Builder
@@ -236,7 +287,7 @@ func (m *Model) processDetail(name string, st *targetState, width int) string {
 }
 
 func (m *Model) updateProcesses(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	ts := m.processTargets()
+	items := m.processItems()
 	switch key.String() {
 	case "q":
 		return m, tea.Quit
@@ -249,15 +300,48 @@ func (m *Model) updateProcesses(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prcur--
 		}
 	case "down", "j":
-		if m.prcur < len(ts)-1 {
+		if m.prcur < len(items)-1 {
 			m.prcur++
 		}
 	case "x":
-		if m.prcur < len(ts) {
-			return m, m.cancelRun(ts[m.prcur])
+		if m.prcur < len(items) {
+			it := items[m.prcur]
+			if it.queued >= 0 {
+				return m, m.removeQueued(it.target, it.queued)
+			}
+			return m, m.cancelRun(it.target)
 		}
 	}
 	return m, nil
+}
+
+// removeQueued asks for confirmation, then takes the idx'th queued job off the
+// target's queue. The run in progress is not affected.
+func (m *Model) removeQueued(t domain.Target, idx int) tea.Cmd {
+	st := m.state(t.Name)
+	if idx >= len(st.pending) || m.bg == nil {
+		return nil
+	}
+	job := st.pending[idx]
+	return m.openConfirm(fmt.Sprintf("Remove the queued %s from the queue of %q? The run in progress is not affected.", jobLabel(job), t.Name), func(m *Model) tea.Cmd {
+		m.dequeue(t.Name, idx, job)
+		return nil
+	})
+}
+
+// dequeue takes the job at position idx off the target's queue. The position,
+// not just the job, identifies it: the same job may be queued more than once.
+func (m *Model) dequeue(target string, idx int, job domain.Job) {
+	st := m.state(target)
+	if err := m.bg.Dequeue(target, idx, job); err != nil {
+		m.notice = "remove: " + err.Error()
+		return
+	}
+	if idx < len(st.pending) && st.pending[idx] == job {
+		st.pending = slices.Delete(st.pending, idx, idx+1)
+	}
+	st.addLog(fmt.Sprintf("－ removed %s from the queue", jobLabel(job)))
+	m.notice = fmt.Sprintf("removed %s from the queue", jobLabel(job))
 }
 
 // cancelRun asks for confirmation, then cancels the target's run. The

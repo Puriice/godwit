@@ -157,6 +157,65 @@ func TestStartQueuesBehindARunningWorker(t *testing.T) {
 	}
 }
 
+func TestDequeueRemovesOnlyThatJob(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
+	redo := domain.Job{Target: "prod", Op: domain.OpRedo, Version: 7}
+	down := domain.Job{Target: "prod", Op: domain.OpDown, N: 1}
+	for _, j := range []domain.Job{redo, down} {
+		if _, err := r.Start(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Dequeue("prod", 0, redo); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.Poll("prod", 0); len(st.Pending) != 1 || st.Pending[0] != down {
+		t.Fatalf("pending = %+v", st.Pending)
+	}
+	if err := r.Dequeue("prod", 0, redo); err == nil {
+		t.Error("want an error for a job that is not at that position")
+	}
+	if err := r.Dequeue("prod", 5, down); err == nil {
+		t.Error("want an error for a position past the end")
+	}
+	if err := r.Dequeue("prod", 0, down); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.Poll("prod", 0); len(st.Pending) != 0 {
+		t.Errorf("pending = %+v", st.Pending)
+	}
+}
+
+// With A, B, A queued, removing the last A must leave A, B in that order.
+func TestDequeueRemovesTheSelectedDuplicate(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
+	a := domain.Job{Target: "prod", Op: domain.OpRedo, Version: 7}
+	b := domain.Job{Target: "prod", Op: domain.OpDown, N: 1}
+	for _, j := range []domain.Job{a, b, a} {
+		if _, err := r.Start(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Dequeue("prod", 2, a); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.Poll("prod", 0)
+	if len(st.Pending) != 2 || st.Pending[0] != a || st.Pending[1] != b {
+		t.Fatalf("pending = %+v, want A then B", st.Pending)
+	}
+
+	// A position that moved on (the worker took the first job meanwhile)
+	// must not remove a different job.
+	if err := r.Dequeue("prod", 1, a); err == nil {
+		t.Error("removed something at a position that no longer holds that job")
+	}
+	if st, _ := r.Poll("prod", 0); len(st.Pending) != 2 {
+		t.Errorf("pending = %+v", st.Pending)
+	}
+}
+
 func TestWorkerHandsOverToTheNextQueuedJob(t *testing.T) {
 	chainGrace = 0
 	r := &Runner{root: t.TempDir(), exe: filepath.Join(t.TempDir(), "missing")}
