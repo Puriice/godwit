@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/puriice/godwit/internal/adapters/cli"
+	"github.com/puriice/godwit/internal/adapters/detach"
 	"github.com/puriice/godwit/internal/adapters/filestore"
 	"github.com/puriice/godwit/internal/adapters/fsmigrations"
 	"github.com/puriice/godwit/internal/adapters/plugin"
@@ -59,7 +60,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate", "plugin":
+	case "", "init", "auth", "migrate", "plugin", detach.WorkerCommand:
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -129,6 +130,12 @@ func main() {
 		}, args[1:], os.Stdout)
 	case "migrate":
 		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
+	case detach.WorkerCommand:
+		// Started by the TUI as a detached process; see internal/adapters/detach.
+		var runner *detach.Runner
+		if runner, err = detach.New(root); err == nil {
+			err = runner.RunWorker(context.Background(), args[1:], svc.RunJob)
+		}
 	default:
 		model := tui.New(svc).WithPluginOps(tui.PluginOps{
 			Probe: func(spec domain.PluginSpec) (domain.DriverInfo, error) { return plugin.Probe(root, spec) },
@@ -144,6 +151,10 @@ func main() {
 				return plugin.Install(ctx, dir, pkg, out, out)
 			},
 		})
+		// Runs go to detached workers so they survive quitting the TUI.
+		if runner, rerr := detach.New(root); rerr == nil {
+			model.WithBackground(runner)
+		}
 		_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 	}
 	if err != nil {
