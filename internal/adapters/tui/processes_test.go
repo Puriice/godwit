@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,9 +10,21 @@ import (
 )
 
 type stubRunner struct {
-	stopped []string
+	stopped   []string
+	dequeued  []domain.Job
+	dequeuedAt []int
+	dequeueOK bool // Dequeue finds the job; otherwise it fails
 	started []domain.Job
 	queued  bool // Start reports the job as queued behind a run
+}
+
+func (s *stubRunner) Dequeue(_ string, index int, j domain.Job) error {
+	if !s.dequeueOK {
+		return errors.New("the queue has changed")
+	}
+	s.dequeued = append(s.dequeued, j)
+	s.dequeuedAt = append(s.dequeuedAt, index)
+	return nil
 }
 
 func (s *stubRunner) Start(j domain.Job) (bool, error) {
@@ -171,6 +184,101 @@ func TestCancelNeedsARunningProcess(t *testing.T) {
 	m.Update(key("x"))
 	if m.screen == scrForm || len(bg.stopped) != 0 || !strings.Contains(m.notice, "no run in progress") {
 		t.Errorf("screen=%v stopped=%v notice=%q", m.screen, bg.stopped, m.notice)
+	}
+}
+
+// queuedModel is processesModel with two jobs queued behind the run on "a".
+func queuedModel(t *testing.T) (*Model, *stubRunner) {
+	t.Helper()
+	m, bg := processesModel(t)
+	m.state("a").pending = []domain.Job{
+		{Target: "a", Op: domain.OpRedo, Version: 7},
+		{Target: "a", Op: domain.OpDown, N: 1},
+	}
+	m.screen = scrProcesses
+	return m, bg
+}
+
+func TestQueuedJobsAreSelectableSubItems(t *testing.T) {
+	m, _ := queuedModel(t)
+	if v := m.viewProcesses(); !strings.Contains(v, "↳ redo 7") || !strings.Contains(v, "↳ down -n 1") {
+		t.Fatalf("the queue is not listed under the run:\n%s", v)
+	}
+	if got := len(m.processItems()); got != 3 {
+		t.Fatalf("items = %d, want the run and two queued jobs", got)
+	}
+
+	m.Update(key("down"))
+	v := m.viewProcesses()
+	if !strings.Contains(v, "a · queued") || !strings.Contains(v, "1 of 2") {
+		t.Errorf("details of the first queued job:\n%s", v)
+	}
+	m.Update(key("down"))
+	if v := m.viewProcesses(); !strings.Contains(v, "2 of 2") {
+		t.Errorf("details of the second queued job:\n%s", v)
+	}
+	m.Update(key("down"))
+	if m.prcur != 2 {
+		t.Errorf("moved past the last item: %d", m.prcur)
+	}
+}
+
+func TestXOnAQueuedJobRemovesItNotTheRun(t *testing.T) {
+	m, bg := queuedModel(t)
+	bg.dequeueOK = true
+	m.Update(key("down"))
+	m.Update(key("x"))
+	if m.screen != scrForm {
+		t.Fatalf("no confirmation asked, screen = %v", m.screen)
+	}
+	if len(bg.dequeued) != 0 || len(bg.stopped) != 0 {
+		t.Fatal("acted before the user confirmed")
+	}
+	// What confirming the form does.
+	m.screen = scrProcesses
+	m.dequeue("a", 0, m.state("a").pending[0])
+	st := m.state("a")
+	if len(bg.dequeued) != 1 || bg.dequeued[0].Op != domain.OpRedo || len(bg.stopped) != 0 {
+		t.Fatalf("dequeued=%v stopped=%v", bg.dequeued, bg.stopped)
+	}
+	if len(st.pending) != 1 || st.pending[0].Op != domain.OpDown || !st.running {
+		t.Errorf("pending=%v running=%v", st.pending, st.running)
+	}
+}
+
+func TestXOnADuplicateRemovesTheSelectedPosition(t *testing.T) {
+	m, bg := queuedModel(t)
+	bg.dequeueOK = true
+	a := domain.Job{Target: "a", Op: domain.OpRedo, Version: 7}
+	b := domain.Job{Target: "a", Op: domain.OpDown, N: 1}
+	st := m.state("a")
+	st.pending = []domain.Job{a, b, a}
+
+	// Select the last A: the run, then A, B, A.
+	m.Update(key("down"))
+	m.Update(key("down"))
+	m.Update(key("down"))
+	m.Update(key("x"))
+	if m.screen != scrForm {
+		t.Fatalf("no confirmation asked, screen = %v", m.screen)
+	}
+	// What confirming the form does, for the selected row.
+	m.screen = scrProcesses
+	m.dequeue("a", 2, st.pending[2])
+	if len(bg.dequeuedAt) != 1 || bg.dequeuedAt[0] != 2 {
+		t.Fatalf("asked the runner to remove position %v, want 2", bg.dequeuedAt)
+	}
+	if len(st.pending) != 2 || st.pending[0] != a || st.pending[1] != b {
+		t.Errorf("pending = %v, want the first A and B to stay in order", st.pending)
+	}
+}
+
+func TestRemovingAJobThatAlreadyStartedIsReported(t *testing.T) {
+	m, bg := queuedModel(t)
+	bg.dequeueOK = false
+	m.dequeue("a", 0, m.state("a").pending[0])
+	if len(m.state("a").pending) != 2 || !strings.Contains(m.notice, "has changed") {
+		t.Errorf("pending=%v notice=%q", m.state("a").pending, m.notice)
 	}
 }
 

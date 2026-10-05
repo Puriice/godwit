@@ -14,7 +14,8 @@ migration files can serve both.
   the target still running. Progress is logged in `.godwit/runs/<target>.log`.
   Starting another run on a target that is already running queues it: it starts
   when the current run ends well, and is dropped if that run fails or is cancelled.
-  Queued jobs show in the TUI's processes tab.
+  Queued jobs show in the TUI's processes tab, under their run; select one to see
+  its details and press `x` to remove it.
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 
