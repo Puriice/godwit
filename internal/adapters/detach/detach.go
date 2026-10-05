@@ -90,6 +90,20 @@ const handoverWait = 5 * time.Second
 // nextLine marks a run that hands over to a queued job.
 const nextLine = "-- next"
 
+// ensureRunsDir creates dir, which holds one machine's pid, log, queue and
+// lock files, and keeps it all out of version control with a .gitignore of its
+// own, so it also works in projects whose .godwit/.gitignore predates it.
+func ensureRunsDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	ignore := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(ignore); os.IsNotExist(err) {
+		return os.WriteFile(ignore, []byte("*\n!.gitignore\n"), 0o644)
+	}
+	return nil
+}
+
 func (r *Runner) queueFile(target string) string {
 	pid, _ := r.paths(target)
 	return strings.TrimSuffix(pid, ".pid") + ".queue"
@@ -100,7 +114,7 @@ func (r *Runner) queueFile(target string) string {
 func (r *Runner) lock(target string) (func(), error) {
 	pid, _ := r.paths(target)
 	file := strings.TrimSuffix(pid, ".pid") + ".lock"
-	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+	if err := ensureRunsDir(filepath.Dir(file)); err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(handoverWait)
@@ -216,7 +230,7 @@ func (r *Runner) Start(j domain.Job) (bool, error) {
 // replaces it, so the target never looks idle in between.
 func (r *Runner) spawn(j domain.Job, chained bool) error {
 	pidFile, logFile := r.paths(j.Target)
-	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+	if err := ensureRunsDir(filepath.Dir(pidFile)); err != nil {
 		return err
 	}
 	if err := os.WriteFile(logFile, nil, 0o644); err != nil {
