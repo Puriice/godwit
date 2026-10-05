@@ -167,6 +167,17 @@ func (r *Runner) Dequeue(target string, index int, j domain.Job) error {
 	return r.writeQueue(target, slices.Delete(queue, index, index+1))
 }
 
+// ClearQueue removes every job queued on target and returns how many.
+func (r *Runner) ClearQueue(target string) (int, error) {
+	unlock, err := r.lock(target)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	n := len(r.readQueue(target))
+	return n, r.writeQueue(target, nil)
+}
+
 // busy reports whether target has a live worker, even one that has already
 // logged its end and is about to exit or to hand over.
 func (r *Runner) busy(target string) bool {

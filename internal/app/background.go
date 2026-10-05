@@ -48,6 +48,9 @@ type BackgroundRunner interface {
 	// target's queue, provided it is still job. It fails when the queue has
 	// changed since, for instance because that job has started.
 	Dequeue(target string, index int, job domain.Job) error
+	// ClearQueue removes every job queued behind the target's run and returns
+	// how many there were. The run itself is not affected.
+	ClearQueue(target string) (int, error)
 	// Stop asks the target's run to cancel. It returns at once; Poll reports
 	// Cancelling until the run has stopped, then Cancelled.
 	Stop(target string) error

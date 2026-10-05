@@ -11,11 +11,20 @@ import (
 
 type stubRunner struct {
 	stopped   []string
+	cleared   []string
 	dequeued  []domain.Job
 	dequeuedAt []int
 	dequeueOK bool // Dequeue finds the job; otherwise it fails
 	started []domain.Job
 	queued  bool // Start reports the job as queued behind a run
+}
+
+func (s *stubRunner) ClearQueue(target string) (int, error) {
+	if !s.dequeueOK {
+		return 0, errors.New("the queue has changed")
+	}
+	s.cleared = append(s.cleared, target)
+	return 2, nil
 }
 
 func (s *stubRunner) Dequeue(_ string, index int, j domain.Job) error {
@@ -270,6 +279,56 @@ func TestXOnADuplicateRemovesTheSelectedPosition(t *testing.T) {
 	}
 	if len(st.pending) != 2 || st.pending[0] != a || st.pending[1] != b {
 		t.Errorf("pending = %v, want the first A and B to stay in order", st.pending)
+	}
+}
+
+func TestCapitalXAsksThenClearsTheWholeQueue(t *testing.T) {
+	m, bg := queuedModel(t)
+	bg.dequeueOK = true
+	st := m.state("a")
+
+	// From a queued row, not only from the run.
+	m.Update(key("down"))
+	m.Update(key("down"))
+	m.Update(key("X"))
+	if m.screen != scrForm {
+		t.Fatalf("no confirmation asked, screen = %v", m.screen)
+	}
+	if len(bg.cleared) != 0 || len(st.pending) != 2 {
+		t.Fatal("cleared before the user confirmed")
+	}
+	// What confirming the form does.
+	m.screen = scrProcesses
+	m.clearPending("a")
+	if len(bg.cleared) != 1 || bg.cleared[0] != "a" || len(bg.stopped) != 0 {
+		t.Fatalf("cleared=%v stopped=%v", bg.cleared, bg.stopped)
+	}
+	if len(st.pending) != 0 || !st.running || st.cancelling {
+		t.Errorf("pending=%v running=%v cancelling=%v", st.pending, st.running, st.cancelling)
+	}
+	if m.prcur != 0 {
+		t.Errorf("the cursor stayed on a row that is gone: %d", m.prcur)
+	}
+	if got := len(m.processItems()); got != 1 {
+		t.Errorf("items = %d, want just the run", got)
+	}
+}
+
+func TestCapitalXWithNothingQueuedSaysSo(t *testing.T) {
+	m, bg := processesModel(t)
+	m.screen = scrProcesses
+	m.Update(key("X"))
+	if m.screen == scrForm || len(bg.cleared) != 0 || !strings.Contains(m.notice, "nothing is queued") {
+		t.Errorf("screen=%v cleared=%v notice=%q", m.screen, bg.cleared, m.notice)
+	}
+}
+
+func TestClearQueueFailureKeepsTheQueue(t *testing.T) {
+	m, bg := queuedModel(t)
+	bg.dequeueOK = false
+	m.clearPending("a")
+	if len(m.state("a").pending) != 2 || !strings.Contains(m.notice, "clear queue") {
+		t.Errorf("pending=%v notice=%q", m.state("a").pending, m.notice)
 	}
 }
 
