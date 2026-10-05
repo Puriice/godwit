@@ -44,7 +44,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
+	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · o run only selected · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -298,7 +298,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "N", "n", "b", "enter", "R", "c", "r":
+		case "N", "n", "b", "enter", "R", "o", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -344,6 +344,8 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.goTo(t, st)
 	case "R":
 		return m, m.confirmRedo(t, st)
+	case "o":
+		return m, m.runOnly(t, st)
 	case "c":
 		if m.mcur < len(st.items) && st.items[m.mcur].State == domain.Dirty {
 			it := st.items[m.mcur]
@@ -491,4 +493,28 @@ func truncate(s string, n int) string {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
+}
+
+// runOnly runs just the selected migration: a pending one is applied without
+// the older pending ones, an applied one is redone.
+func (m *Model) runOnly(t domain.Target, st *targetState) tea.Cmd {
+	if m.mcur >= len(st.items) {
+		return nil
+	}
+	it := st.items[m.mcur]
+	if it.State != domain.Pending {
+		return m.confirmRedo(t, st)
+	}
+	label := fmt.Sprintf("%d_%s", it.Version, it.Name)
+	older := 0
+	for _, x := range st.items[:m.mcur] {
+		if x.State == domain.Pending {
+			older++
+		}
+	}
+	q := fmt.Sprintf("Apply only %s on %s?", label, t.Name)
+	if older > 0 {
+		q += fmt.Sprintf(" %d older pending migration(s) are skipped and it may depend on them.", older)
+	}
+	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.applyOnly(t, it.Version) })
 }

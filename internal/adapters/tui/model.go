@@ -230,6 +230,14 @@ func (m *Model) downTo(t domain.Target, version int64) tea.Cmd {
 	})
 }
 
+// applyOnly applies just one pending migration.
+func (m *Model) applyOnly(t domain.Target, version int64) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, domain.Up, func(ctx context.Context, prog app.Progress) (int, error) {
+		return svc.ApplyOnly(ctx, t.Name, version, prog)
+	})
+}
+
 // redo reverts one applied migration and applies it again.
 func (m *Model) redo(t domain.Target, version int64) tea.Cmd {
 	svc := m.svc

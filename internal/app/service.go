@@ -567,6 +567,22 @@ func (s *Service) UpTo(ctx context.Context, target string, version int64, prog P
 	})
 }
 
+// ApplyOnly applies the single pending migration with the given version and
+// nothing else, even if older migrations are still pending or it is disabled
+// on the target. Later migrations that depend on skipped ones may fail.
+func (s *Service) ApplyOnly(ctx context.Context, target string, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+		sel, err := findItem(items, version)
+		if err != nil {
+			return nil, err
+		}
+		if sel.State != domain.Pending {
+			return nil, fmt.Errorf("%d_%s is already %s; use redo to run it again", sel.Version, sel.Name, sel.State)
+		}
+		return []domain.Item{sel}, nil
+	})
+}
+
 // DownTo reverts every applied migration newer than version, newest first, so
 // that version becomes the most recently applied migration. The migration
 // itself stays applied. It must exist and be applied; if it already is the
