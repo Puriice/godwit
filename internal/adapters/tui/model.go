@@ -86,6 +86,41 @@ type targetState struct {
 	runErr  error // last run error; survives the status refresh after a run
 	log     []string
 	events  chan tea.Msg
+	// queue holds the versions the current run is executing or still has
+	// ahead of it; they show as running whatever the database says.
+	queue map[int64]bool
+	redo  bool // the run is a redo: its migration is reverted, then applied
+}
+
+// markRunning shows the migrations of the current run as running. Without it
+// the one being executed reads as dirty, because a block that cannot be rolled
+// back is recorded dirty until it finishes.
+func (st *targetState) markRunning() {
+	if !st.running {
+		return
+	}
+	for i := range st.items {
+		if st.queue[st.items[i].Version] {
+			st.items[i].State = domain.Running
+		}
+	}
+}
+
+// track updates the queue from a run's queued and finished versions.
+// Versions finished stay queued for a redo, which reports its revert and
+// its re-apply separately.
+func (st *targetState) track(queued, finished []int64, keepFinished bool) {
+	if st.queue == nil {
+		st.queue = map[int64]bool{}
+	}
+	for _, v := range queued {
+		st.queue[v] = true
+	}
+	if !keepFinished {
+		for _, v := range finished {
+			delete(st.queue, v)
+		}
+	}
 }
 
 // Model is the root Bubble Tea model.
@@ -182,7 +217,7 @@ func (m *Model) refreshAll() tea.Cmd {
 
 func (m *Model) refresh(t domain.Target) tea.Cmd {
 	st := m.state(t.Name)
-	if st.running {
+	if st.running && m.bg == nil { // a background run is read while it works
 		return nil
 	}
 	if t.Disabled { // never connect to a disabled target
@@ -277,6 +312,10 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 		return nil
 	}
 	st.running, st.err, st.runErr = true, nil, nil
+	st.queue, st.redo = nil, job.Op == domain.OpRedo
+	if st.redo {
+		st.track([]int64{job.Version}, nil, true)
+	}
 	st.log = append(st.log, fmt.Sprintf("— %s —", dir))
 	if m.bg != nil {
 		if err := m.bg.Start(job); err != nil {
@@ -297,6 +336,15 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 		ch <- runDoneMsg{target: t.Name, dir: dir, n: n, err: err}
 	}()
 	return waitMsg(ch)
+}
+
+// trackJob feeds a background run's announcements into the queue. A redo is
+// not queued by the run, so its one migration is queued here.
+func (st *targetState) trackJob(rs app.RunStatus) {
+	if st.redo {
+		rs.Queued = append(rs.Queued, rs.Job.Version)
+	}
+	st.track(rs.Queued, rs.Finished, st.redo)
 }
 
 // pollInterval is how often a background run's log is re-read.
@@ -359,11 +407,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		st.err = msg.err
 		if msg.err == nil {
 			st.items, st.loaded = msg.items, true
+			st.markRunning()
 		}
 		return m, nil
 
 	case progressMsg:
 		st := m.state(msg.target)
+		switch msg.ev.Phase {
+		case domain.Queued:
+			st.track([]int64{msg.ev.Version}, nil, false)
+			st.markRunning()
+			return m, waitMsg(st.events)
+		case domain.Done:
+			st.track(nil, []int64{msg.ev.Version}, st.redo)
+		}
 		st.addLog(formatEvent(msg.ev))
 		return m, waitMsg(st.events)
 
@@ -373,11 +430,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		st.running, st.err, st.runErr = true, nil, nil
+		st.queue, st.redo = nil, msg.st.Job.Op == domain.OpRedo
 		st.addLog(fmt.Sprintf("— %s (still running in the background) —", msg.st.Job.Direction()))
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
 		}
-		return m, pollRun(m.bg, msg.target, msg.st.Next)
+		st.trackJob(msg.st)
+		st.markRunning()
+		// The status read before the run was noticed shows it as dirty.
+		cmds := []tea.Cmd{pollRun(m.bg, msg.target, msg.st.Next)}
+		if t, ok := m.svc.Target(msg.target); ok {
+			cmds = append(cmds, m.refresh(t))
+		}
+		return m, tea.Batch(cmds...)
 
 	case bgPollMsg:
 		st := m.state(msg.target)
@@ -393,6 +458,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
 		}
+		st.trackJob(msg.st)
+		st.markRunning()
+		var refresh tea.Cmd
+		if len(msg.st.Finished) > 0 && !msg.st.Done {
+			if t, ok := m.svc.Target(msg.target); ok {
+				refresh = m.refresh(t) // show what has been applied so far
+			}
+		}
 		switch {
 		case msg.st.Done && msg.st.Err != "":
 			return done(errors.New(msg.st.Err))
@@ -401,7 +474,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case !msg.st.Active:
 			return done(errors.New("background run stopped without finishing; check the target's state"))
 		}
-		return m, pollRun(m.bg, msg.target, msg.st.Next)
+		return m, tea.Batch(refresh, pollRun(m.bg, msg.target, msg.st.Next))
 
 	case pluginDoneMsg:
 		m.pbusy = ""
@@ -437,7 +510,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runDoneMsg:
 		st := m.state(msg.target)
-		st.running, st.events = false, nil
+		st.running, st.events, st.queue = false, nil, nil
 		if msg.err != nil {
 			st.runErr = msg.err
 			st.addLog("✗ " + msg.err.Error())

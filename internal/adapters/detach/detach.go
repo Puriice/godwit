@@ -21,7 +21,25 @@ import (
 // WorkerCommand is the first argument of a worker process.
 const WorkerCommand = "__worker"
 
-const finishedPrefix = "-- finished "
+// LaunchCommand is the first argument of the process that starts a worker.
+const LaunchCommand = "__launch"
+
+const (
+	finishedPrefix = "-- finished "
+	queuedPrefix   = "· queued "
+	donePrefix     = "✓ "
+)
+
+// lineVersion reads the version out of "<dir> <version>_<name>".
+func lineVersion(s string) (int64, bool) {
+	_, label, ok := strings.Cut(s, " ")
+	if !ok {
+		return 0, false
+	}
+	num, _, _ := strings.Cut(label, "_")
+	v, err := strconv.ParseInt(num, 10, 64)
+	return v, err == nil
+}
 
 // Runner starts and observes background runs.
 type Runner struct {
@@ -66,10 +84,29 @@ func (r *Runner) Start(j domain.Job) error {
 	if err := os.WriteFile(logFile, nil, 0o644); err != nil {
 		return err
 	}
+	os.Remove(pidFile) //nolint:errcheck // a stale record of the previous run
+	// The worker is started by a short-lived launcher, not by this process.
+	// Once the launcher exits the worker has no live parent, so killing this
+	// process's tree (a closing terminal, taskkill /T) cannot reach it.
+	cmd := exec.Command(r.exe, append([]string{LaunchCommand}, j.Args()...)...)
+	cmd.Dir = r.root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("starting worker: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Launch is the body of the launcher process: it starts a detached worker for
+// the job in args and records its pid, then returns so the launcher can exit.
+func (r *Runner) Launch(args []string) error {
+	j, err := domain.ParseJob(args)
+	if err != nil {
+		return err
+	}
+	pidFile, _ := r.paths(j.Target)
 	cmd := exec.Command(r.exe, append([]string{WorkerCommand}, j.Args()...)...)
 	cmd.Dir = r.root
-	detachAttrs(cmd)
-	if err := cmd.Start(); err != nil {
+	if err := startDetached(cmd); err != nil {
 		return err
 	}
 	pid := cmd.Process.Pid
@@ -116,6 +153,17 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 				st.Done = true
 				st.Count, st.Err = parseFinished(rest)
 				continue
+			}
+			if rest, ok := strings.CutPrefix(line, queuedPrefix); ok {
+				if v, ok := lineVersion(rest); ok {
+					st.Queued = append(st.Queued, v)
+				}
+				continue
+			}
+			if rest, ok := strings.CutPrefix(line, donePrefix); ok {
+				if v, ok := lineVersion(rest); ok {
+					st.Finished = append(st.Finished, v)
+				}
 			}
 			st.Lines = append(st.Lines, line)
 		}
@@ -169,6 +217,8 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 func FormatEvent(e domain.Event) string {
 	label := fmt.Sprintf("%d_%s", e.Version, e.Name)
 	switch e.Phase {
+	case domain.Queued:
+		return fmt.Sprintf("%s%s %s", queuedPrefix, e.Direction, label)
 	case domain.Started:
 		return fmt.Sprintf("… %s %s", e.Direction, label)
 	case domain.Done:

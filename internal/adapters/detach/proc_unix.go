@@ -8,8 +8,11 @@ import (
 	"syscall"
 )
 
-func detachAttrs(cmd *exec.Cmd) {
+// startDetached starts cmd in its own session, so a hangup or Ctrl+C aimed at
+// our terminal does not reach it.
+func startDetached(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
 }
 
 func alive(pid int) bool {

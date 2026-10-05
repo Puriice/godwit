@@ -188,6 +188,9 @@ const (
 	Modified State = "modified" // applied, but the file's checksum changed
 	Dirty    State = "dirty"    // a previous run failed part-way
 	Missing  State = "missing"  // recorded in the target, no file on disk
+	// Running is never recorded: a front end shows it for migrations that a
+	// run in progress is executing or still has queued.
+	Running State = "running"
 )
 
 // Item is one row of a target's migration status.
@@ -219,6 +222,9 @@ const (
 type Phase string
 
 const (
+	// Queued is reported once per migration, before the run starts the first,
+	// so a front end knows everything the run is going to do.
+	Queued  Phase = "queued"
 	Started Phase = "started"
 	Done    Phase = "done"
 	Failed  Phase = "failed"

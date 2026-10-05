@@ -60,7 +60,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate", "plugin", detach.WorkerCommand:
+	case "", "init", "auth", "migrate", "plugin", detach.WorkerCommand, detach.LaunchCommand:
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -130,6 +130,11 @@ func main() {
 		}, args[1:], os.Stdout)
 	case "migrate":
 		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
+	case detach.LaunchCommand:
+		var runner *detach.Runner
+		if runner, err = detach.New(root); err == nil {
+			err = runner.Launch(args[1:])
+		}
 	case detach.WorkerCommand:
 		// Started by the TUI as a detached process; see internal/adapters/detach.
 		var runner *detach.Runner

@@ -99,6 +99,9 @@ func summarize(items []domain.Item) string {
 	if n := counts["off"]; n > 0 {
 		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d disabled", n)))
 	}
+	if n := counts[domain.Running]; n > 0 {
+		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d running", n)))
+	}
 	if n := counts[domain.Dirty]; n > 0 {
 		parts = append(parts, errStyle.Render(fmt.Sprintf("%d dirty", n)))
 	}
@@ -535,6 +538,8 @@ func badge(s domain.State) string {
 		return warnStyle.Render("pending")
 	case domain.Modified:
 		return warnStyle.Render("applied (file modified)")
+	case domain.Running:
+		return warnStyle.Render("running…")
 	case domain.Dirty:
 		return errStyle.Render("DIRTY")
 	case domain.Missing:

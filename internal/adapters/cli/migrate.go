@@ -257,6 +257,7 @@ func migrateNew(svc *app.Service, args []string, out io.Writer) error {
 func printEvent(out io.Writer, e domain.Event) {
 	label := fmt.Sprintf("%d_%s", e.Version, e.Name)
 	switch e.Phase {
+	case domain.Queued:
 	case domain.Started:
 		fmt.Fprintf(out, "… %s %s\n", e.Direction, label)
 	case domain.Done:

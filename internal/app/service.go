@@ -461,6 +461,9 @@ func (s *Service) execute(ctx context.Context, target string, dir domain.Directi
 		}
 	}
 
+	for _, it := range todo {
+		prog.emit(domain.Event{Direction: dir, Version: it.Version, Name: it.Name, Phase: domain.Queued})
+	}
 	batch := nextBatch(items)
 	for _, it := range todo {
 		if err := ctx.Err(); err != nil {
