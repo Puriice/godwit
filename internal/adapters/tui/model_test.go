@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -360,13 +361,11 @@ func TestPanelCycling(t *testing.T) {
 	m := testModel(t)
 	left, right := tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyRight}
 
-	m.Update(right)
-	if m.screen != scrPlugins {
-		t.Fatalf("right from targets: screen = %v, want plugins", m.screen)
-	}
-	m.Update(right)
-	if m.screen != scrTargets {
-		t.Fatalf("right from plugins should wrap to targets, got %v", m.screen)
+	for _, want := range []screen{scrFiles, scrPlugins, scrTargets} {
+		m.Update(right)
+		if m.screen != want {
+			t.Fatalf("right: screen = %v, want %v", m.screen, want)
+		}
 	}
 	m.Update(left)
 	if m.screen != scrPlugins {
@@ -374,6 +373,31 @@ func TestPanelCycling(t *testing.T) {
 	}
 	if v := m.View(); !strings.Contains(v, "[plugins]") || !strings.Contains(v, "No plugins") {
 		t.Errorf("plugins panel not shown:\n%s", v)
+	}
+}
+
+func TestMigrationFilesPanel(t *testing.T) {
+	m := testModel(t)
+	if strings.Contains(m.View(), "new migration") {
+		t.Error("targets panel should no longer offer n")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if v := m.View(); !strings.Contains(v, "[migrations]") || !strings.Contains(v, "No migration files") {
+		t.Fatalf("files panel not shown:\n%s", v)
+	}
+	m.Update(key("n"))
+	if m.screen != scrForm {
+		t.Fatalf("n should open the new migration form, screen = %v", m.screen)
+	}
+	m.closeForm()
+	if m.screen != scrFiles {
+		t.Errorf("closing the form should return to the files panel, got %v", m.screen)
+	}
+	if _, err := m.svc.CreateMigration("add_things"); err != nil {
+		t.Fatal(err)
+	}
+	if v := m.View(); !strings.Contains(v, "add_things") {
+		t.Errorf("new file not listed:\n%s", v)
 	}
 }
 
@@ -405,5 +429,38 @@ func TestPluginsPanelAddAndRemove(t *testing.T) {
 	m.closeForm()
 	if len(m.svc.Plugins()) != 1 {
 		t.Error("cancelling must keep the plugin")
+	}
+}
+
+func TestMigrateAllToSelectedFile(t *testing.T) {
+	m := testModel(t)
+	for _, n := range []string{"one", "two"} {
+		if _, err := m.svc.CreateMigration(n); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(1100 * time.Millisecond) // versions are timestamps
+	}
+	migs, _ := m.svc.Migrations()
+	if len(migs) != 2 {
+		t.Fatalf("migrations = %d", len(migs))
+	}
+	// Nothing loaded yet: nothing can be planned.
+	m.screen, m.fcur = scrFiles, 0
+	m.Update(key("enter"))
+	if m.screen != scrFiles || !strings.Contains(m.notice, "already") {
+		t.Fatalf("unloaded targets should be skipped, screen %v notice %q", m.screen, m.notice)
+	}
+	// a: first pending; b: both applied, so it rolls back to the first.
+	m.state("a").loaded = true
+	m.state("a").items = []domain.Item{{Version: migs[0].Version, State: domain.Pending}, {Version: migs[1].Version, State: domain.Pending}}
+	rec := &domain.Record{}
+	m.state("b").loaded = true
+	m.state("b").items = []domain.Item{{Version: migs[0].Version, State: domain.Applied, Record: rec}, {Version: migs[1].Version, State: domain.Applied, Record: rec}}
+	m.Update(key("enter"))
+	if m.screen != scrForm {
+		t.Fatalf("enter should ask for confirmation, screen = %v", m.screen)
+	}
+	if v := m.View(); !strings.Contains(strings.ReplaceAll(v, "\n", " "), "Roll back") {
+		t.Errorf("confirmation should name the rollback:\n%s", v)
 	}
 }

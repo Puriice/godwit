@@ -20,6 +20,7 @@ const (
 	scrTargets screen = iota
 	scrMigrations
 	scrForm
+	scrFiles
 	scrPlugins
 )
 
@@ -27,7 +28,7 @@ const (
 var panels = []struct {
 	screen screen
 	name   string
-}{{scrTargets, "targets"}, {scrPlugins, "plugins"}}
+}{{scrTargets, "targets"}, {scrFiles, "migrations"}, {scrPlugins, "plugins"}}
 
 const maxLog = 200
 
@@ -73,6 +74,7 @@ type Model struct {
 	prev   screen // screen to return to when a form closes
 	cursor int    // targets list
 	mcur   int    // migrations list
+	fcur   int    // migration files list
 	pcur   int    // plugins list
 	notice string
 
@@ -344,6 +346,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTargets(key)
 		case scrMigrations:
 			return m.updateMigrations(key)
+		case scrFiles:
+			return m.updateFiles(key)
 		case scrPlugins:
 			return m.updatePlugins(key)
 		}
@@ -357,6 +361,8 @@ func (m *Model) View() string {
 		return m.viewForm()
 	case scrMigrations:
 		return m.viewMigrations()
+	case scrFiles:
+		return m.viewFiles()
 	case scrPlugins:
 		return m.viewPlugins()
 	default:

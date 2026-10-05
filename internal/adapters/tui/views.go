@@ -43,7 +43,7 @@ func (m *Model) header(title string) string {
 
 const (
 	helpSep        = " · "
-	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
+	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · q quit"
 	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
 )
 
@@ -197,8 +197,6 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.reloadMigrations()
 		return m, m.refreshAll()
-	case "n":
-		return m, m.openNewMigrationForm()
 	case "u":
 		enabled := 0
 		for _, t := range m.targets() {
