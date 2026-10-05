@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -57,7 +58,41 @@ func NewRegistry() *Registry {
 	r := &Registry{infos: map[string]DriverInfo{}, aliases: map[string]string{}}
 	r.Add(DriverInfo{Name: "postgres", Aliases: []string{"postgresql", "pg"}, Schemes: []string{"postgres", "postgresql"}})
 	r.Add(DriverInfo{Name: "mysql", Aliases: []string{"mariadb"}, Schemes: []string{"mysql", "mariadb"}, dsn: parseMySQLDSN})
+	r.Add(DriverInfo{
+		Name: "sqlite", Aliases: []string{"sqlite3"}, Schemes: []string{"sqlite", "sqlite3", "file"}, NoHost: true,
+		Parse: ParseSQLite,
+	})
 	return r
+}
+
+// ParseSQLite parses SQLite connection strings: sqlite:///abs/app.db,
+// sqlite://rel/app.db, sqlite:app.db, file:app.db or a bare path, optionally
+// followed by ?params. The path is stored in Target.Database.
+func ParseSQLite(conn string) (Target, string, error) {
+	s := strings.TrimSpace(conn)
+	if i := strings.Index(s, "?"); i >= 0 {
+		q, err := url.ParseQuery(s[i+1:])
+		if err != nil {
+			return Target{}, "", fmt.Errorf("invalid connection parameters")
+		}
+		t, pw, err := ParseSQLite(s[:i])
+		t.Params = firstValues(q)
+		return t, pw, err
+	}
+	for _, p := range []string{"sqlite3://", "sqlite://", "sqlite3:", "sqlite:", "file:"} {
+		if len(s) >= len(p) && strings.EqualFold(s[:len(p)], p) {
+			s = s[len(p):]
+			break
+		}
+	}
+	// sqlite:///C:/dir/app.db -> C:/dir/app.db
+	if len(s) >= 3 && s[0] == '/' && s[2] == ':' {
+		s = s[1:]
+	}
+	if s == "" {
+		return Target{}, "", fmt.Errorf("connection string has no database file path")
+	}
+	return Target{Database: s}, "", nil
 }
 
 // Add registers a driver, replacing any earlier one with the same name.

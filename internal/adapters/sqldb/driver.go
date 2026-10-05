@@ -1,5 +1,5 @@
 // Package sqldb is the driven adapter that talks to real databases. It
-// implements app.DatabaseFactory for PostgreSQL and MySQL/MariaDB and records
+// implements app.DatabaseFactory for PostgreSQL, MySQL/MariaDB and SQLite and records
 // migration state in each target's godwit_migration table.
 package sqldb
 
@@ -31,6 +31,7 @@ func NewFactory() *Factory {
 	return &Factory{openers: map[string]opener{
 		"postgres": openPostgres,
 		"mysql":    openMySQL,
+		"sqlite":   openSQLite,
 	}}
 }
 

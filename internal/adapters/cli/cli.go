@@ -22,10 +22,11 @@ const AuthUsage = `usage: godwit auth list
   remove             delete a target and its saved password (databases are untouched)
   disable / enable   temporarily skip a target, or use it again (settings and password are kept)
 
-  driver             postgres | mysql | any driver added with "godwit plugin add"
+  driver             postgres | mysql | sqlite | any driver added with "godwit plugin add"
   connection string  postgres://user:pass@host:5432/db?sslmode=disable
                      mysql://user:pass@host:3306/db
                      user:pass@tcp(host:3306)/db        (mysql only)
+                     sqlite://path/to/app.db                 (sqlite: no user or password)
                      plugin drivers define their own syntax
 
 Quote the connection string. The password is saved to .godwit/.env and

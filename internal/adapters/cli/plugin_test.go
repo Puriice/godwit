@@ -12,7 +12,7 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-// ops returns fake plugin operations. Commands named after a driver ("sqlite")
+// ops returns fake plugin operations. Commands named after a driver ("duckdb")
 // report that driver; "broken" fails to start; "pg" claims a built-in driver.
 func ops(installed *[]string) PluginOps {
 	return PluginOps{
@@ -56,13 +56,13 @@ func TestPluginAdd(t *testing.T) {
 	}
 
 	// The name defaults to the driver the plugin reports (lower-cased).
-	if err := do("add", "sqlite"); err != nil {
+	if err := do("add", "duckdb"); err != nil {
 		t.Fatal(err)
 	}
-	if got := svc.Plugins(); len(got) != 1 || got[0].Name != "sqlite" || got[0].Command != "sqlite" || len(got[0].Args) != 0 {
+	if got := svc.Plugins(); len(got) != 1 || got[0].Name != "duckdb" || got[0].Command != "duckdb" || len(got[0].Args) != 0 {
 		t.Fatalf("plugins = %+v", got)
 	}
-	if !strings.Contains(out.String(), `Added plugin "sqlite" (driver sqlite)`) {
+	if !strings.Contains(out.String(), `Added plugin "duckdb" (driver duckdb)`) {
 		t.Errorf("output = %q", out.String())
 	}
 
@@ -76,17 +76,17 @@ func TestPluginAdd(t *testing.T) {
 	}
 
 	// Adding the identical plugin again is harmless; a clashing name is not.
-	if err := do("add", "sqlite"); err != nil || !strings.Contains(out.String(), "already registered") || len(svc.Plugins()) != 2 {
+	if err := do("add", "duckdb"); err != nil || !strings.Contains(out.String(), "already registered") || len(svc.Plugins()) != 2 {
 		t.Errorf("re-add: %q %v", out.String(), err)
 	}
-	if err := do("add", "other", "sqlite"); err == nil {
+	if err := do("add", "other", "duckdb"); err == nil {
 		t.Error("a second plugin with an existing name was accepted")
 	}
 
 	if err := do("list"); err != nil || !strings.Contains(out.String(), "mine") || !strings.Contains(out.String(), "--flag x") {
 		t.Errorf("list = %q, %v", out.String(), err)
 	}
-	if err := do("remove", "sqlite"); err != nil || len(svc.Plugins()) != 1 {
+	if err := do("remove", "duckdb"); err != nil || len(svc.Plugins()) != 1 {
 		t.Errorf("remove: %v", err)
 	}
 }

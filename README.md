@@ -1,7 +1,7 @@
 # godwit
 
 A terminal UI and CLI for applying versioned SQL schema migrations to several
-databases at once. PostgreSQL and MySQL/MariaDB are supported, and one set of
+databases at once. PostgreSQL, MySQL/MariaDB and SQLite are supported, and one set of
 migration files can serve both.
 
 - **Multiple targets:** apply the same migrations to any number of databases.
@@ -70,12 +70,12 @@ DROP TABLE users;
 | Directive | Meaning |
 |---|---|
 | `-- +godwit Up` / `Down` | start the apply or roll-back section |
-| `-- +godwit driver: <name>` | statements below run only on that driver (`postgres` or `mysql`) until the next directive. No directive, or a blank name, means all drivers. Unknown names are rejected. |
+| `-- +godwit driver: <name>` | statements below run only on that driver (`postgres`, `mysql` or `sqlite`) until the next directive. No directive, or a blank name, means all drivers. Unknown names are rejected. |
 | `-- +godwit StatementBegin` / `StatementEnd` | keep a body containing `;` as one statement |
 | `-- +godwit NoTransaction` | do not wrap the migration in a transaction (PostgreSQL) |
 
 Statements are split on `;` outside `StatementBegin`/`StatementEnd`. Aliases:
-`postgresql` and `pg` mean `postgres`; `mariadb` means `mysql`.
+`postgresql` and `pg` mean `postgres`; `mariadb` means `mysql`; `sqlite3` means `sqlite`.
 
 ## Commands
 
@@ -115,11 +115,12 @@ Connection strings:
 postgres://user:pass@host:5432/db?sslmode=disable
 mysql://user:pass@host:3306/db
 user:pass@tcp(host:3306)/db          (mysql only)
+sqlite://app.db                      (sqlite: a file path; also sqlite:///abs/app.db or just app.db)
 ```
 
 ## Driver plugins
 
-godwit ships `postgres` and `mysql`. For any other database, add a **driver
+godwit ships `postgres`, `mysql` and `sqlite`. For any other database, add a **driver
 plugin**: a separate executable that godwit starts and talks to over stdin and
 stdout (JSON lines). It can be written in any language and works the same on
 Windows, macOS and Linux, with no rebuild of godwit.
@@ -162,7 +163,7 @@ Migrations screen: `u` apply all, `s` apply next, `d` roll back last,
   checksum and a dirty flag. Status is one of `pending`, `applied`, `modified`
   (file changed after it was applied), `dirty`, or `missing` (recorded, but the
   file is gone).
-- **Locking:** PostgreSQL uses `pg_advisory_lock`, MySQL uses `GET_LOCK`.
+- **Locking:** PostgreSQL uses `pg_advisory_lock`, MySQL uses `GET_LOCK`. SQLite has no advisory lock; its single-writer file lock and the version primary key protect against concurrent runs.
 - **PostgreSQL:** each migration, including its state-table change, runs in one
   transaction, so a failure rolls back and the migration stays pending. Use
   `NoTransaction` for statements that cannot run in one, such as

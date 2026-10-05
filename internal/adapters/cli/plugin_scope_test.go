@@ -43,13 +43,13 @@ func TestPluginGlobalScopes(t *testing.T) {
 	}
 
 	// -g: the user's config only, in the home directory's .godwit.
-	if err := do("add", "-g", "sqlite"); err != nil {
+	if err := do("add", "-g", "duckdb"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "globally (~/.godwit)") {
 		t.Errorf("output = %q", out.String())
 	}
-	if !slices.Equal(names(svc.GlobalPlugins()), []string{"sqlite"}) || len(svc.Plugins()) != 0 {
+	if !slices.Equal(names(svc.GlobalPlugins()), []string{"duckdb"}) || len(svc.Plugins()) != 0 {
 		t.Fatalf("global=%v project=%v", svc.GlobalPlugins(), svc.Plugins())
 	}
 	saved, err := filestore.New(home).Load()
@@ -61,7 +61,7 @@ func TestPluginGlobalScopes(t *testing.T) {
 	if err := do("add", "duck", "-G", "--", "-x"); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names(svc.GlobalPlugins()), []string{"sqlite", "duck"}) || !slices.Equal(names(svc.Plugins()), []string{"duck"}) {
+	if !slices.Equal(names(svc.GlobalPlugins()), []string{"duckdb", "duck"}) || !slices.Equal(names(svc.Plugins()), []string{"duck"}) {
 		t.Fatalf("global=%v project=%v", names(svc.GlobalPlugins()), names(svc.Plugins()))
 	}
 	if !strings.Contains(out.String(), "globally (~/.godwit) and in this project") {
@@ -74,8 +74,8 @@ func TestPluginGlobalScopes(t *testing.T) {
 		t.Errorf("re-add: %q %v", out.String(), err)
 	}
 	// ...and adding to the other scope only fills in what is missing.
-	if err := do("add", "-G", "sqlite"); err != nil || !strings.Contains(out.String(), "Added") ||
-		len(svc.GlobalPlugins()) != 2 || !slices.Equal(names(svc.Plugins()), []string{"duck", "sqlite"}) {
+	if err := do("add", "-G", "duckdb"); err != nil || !strings.Contains(out.String(), "Added") ||
+		len(svc.GlobalPlugins()) != 2 || !slices.Equal(names(svc.Plugins()), []string{"duck", "duckdb"}) {
 		t.Errorf("fill in: %q %v global=%v project=%v", out.String(), err, svc.GlobalPlugins(), svc.Plugins())
 	}
 
@@ -90,10 +90,10 @@ func TestPluginGlobalScopes(t *testing.T) {
 	}
 
 	// remove: project by default, -g global, -G wherever it is.
-	if err := do("remove", "sqlite"); err != nil || !slices.Equal(names(svc.GlobalPlugins()), []string{"sqlite", "duck"}) {
+	if err := do("remove", "duckdb"); err != nil || !slices.Equal(names(svc.GlobalPlugins()), []string{"duckdb", "duck"}) {
 		t.Errorf("remove local: %v", err)
 	}
-	if err := do("remove", "-g", "sqlite"); err != nil || !slices.Equal(names(svc.GlobalPlugins()), []string{"duck"}) {
+	if err := do("remove", "-g", "duckdb"); err != nil || !slices.Equal(names(svc.GlobalPlugins()), []string{"duck"}) {
 		t.Errorf("remove global: %v", err)
 	}
 	if err := do("remove", "-G", "duck"); err != nil || len(svc.GlobalPlugins())+len(svc.Plugins()) != 0 {
@@ -170,12 +170,12 @@ func TestPluginScopeConflictChangesNothing(t *testing.T) {
 	var out bytes.Buffer
 	do := func(args ...string) error { return Plugin(context.Background(), svc, o, args, &out) }
 
-	// "sqlite" already exists in the project with another command.
-	if err := do("add", "./other/sqlite", "sqlite"); err != nil {
+	// "duckdb" already exists in the project with another command.
+	if err := do("add", "./other/duckdb", "duckdb"); err != nil {
 		t.Fatal(err)
 	}
 	// -G would add globally, then clash locally: nothing may be half done.
-	err := do("add", "-G", "sqlite")
+	err := do("add", "-G", "duckdb")
 	if err == nil || !strings.Contains(err.Error(), "already exists in this project") {
 		t.Fatalf("err = %v", err)
 	}
@@ -189,13 +189,13 @@ func TestPluginGlobalUnavailableAndBadFlags(t *testing.T) {
 	var installed []string
 	o := ops(&installed)
 	var out bytes.Buffer
-	for _, args := range [][]string{{"add", "-g", "sqlite"}, {"install", "-G", "github.com/me/x"}, {"remove", "-g", "x"}} {
+	for _, args := range [][]string{{"add", "-g", "duckdb"}, {"install", "-G", "github.com/me/x"}, {"remove", "-g", "x"}} {
 		if err := Plugin(context.Background(), svc, o, args, &out); err == nil || !strings.Contains(err.Error(), "home directory") {
 			t.Errorf("%v: err = %v", args, err)
 		}
 	}
 	withGlobal(t, svc)
-	for _, args := range [][]string{{"add", "-g", "-G", "sqlite"}, {"add", "--force", "sqlite"}, {"add", "-x", "sqlite"}, {"list", "-g"}} {
+	for _, args := range [][]string{{"add", "-g", "-G", "duckdb"}, {"add", "--force", "duckdb"}, {"add", "-x", "duckdb"}, {"list", "-g"}} {
 		if err := Plugin(context.Background(), svc, o, args, &out); err == nil || !strings.Contains(err.Error(), "usage: godwit plugin") {
 			t.Errorf("%v: err = %v", args, err)
 		}
