@@ -24,9 +24,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          range="${prev:+$prev..}${GITHUB_REF_NAME}"
+          git log --no-merges --pretty='%s' "$range" > commits.txt
+          section() { # title, prefix regex
+            lines=$(grep -E "^($2):" commits.txt | sed -E 's/^[^:]+:[[:space:]]*/- /' || true)
+            [ -n "$lines" ] && printf '### %s\n%s\n\n' "$1" "$lines"
+            return 0
+          }
+          {
+            section Added Add
+            section Changed Change
+            section Fixed Fix
+            section Removed Remove
+            other=$(grep -vE '^(Add|Change|Fix|Remove):' commits.txt | sed 's/^/- /' || true)
+            [ -n "$other" ] && printf '### Other\n%s\n\n' "$other"
+            [ -n "$prev" ] && echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_REF_NAME}"
+          } > notes.md
+          cat notes.md
       - name: Build
         run: |
           mkdir dist
@@ -46,4 +68,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --notes-file notes.md --title "$GITHUB_REF_NAME"
