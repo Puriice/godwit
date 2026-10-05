@@ -16,9 +16,9 @@ import (
 
 // MigrateUsage documents the migrate subcommands.
 const MigrateUsage = `usage: godwit migrate status [target...]
-       godwit migrate up [-n N | --to VERSION] [target...]
-       godwit migrate down [-n N | --to VERSION | --batch] [target...]
-       godwit migrate redo <version> [target...]
+       godwit migrate up [--detach] [-n N | --to VERSION] [target...]
+       godwit migrate down [--detach] [-n N | --to VERSION | --batch] [target...]
+       godwit migrate redo [--detach] <version> [target...]
        godwit migrate clear-dirty <version> <target>
        godwit migrate new <name>
 
@@ -35,6 +35,12 @@ const MigrateUsage = `usage: godwit migrate status [target...]
   clear-dirty  clear the dirty flag after repairing a failed migration by hand
   new          create migrations/<timestamp>_<name>.sql from the template
 
+--detach (up, down and redo; put it before the version or target names) starts
+the run in a background process and returns at once. The run keeps going after
+this command, or the terminal, exits. Follow it in the log file the command
+prints, with "godwit migrate status", or in the TUI. A run that is still
+going shows its migrations as running there.
+
 Without target names, enabled targets are used; disabled targets are skipped.
 Passwords come from GODWIT_<TARGET>_PASSWORD or .godwit/.env; nothing is
 prompted for. Every target is attempted even if an earlier one fails.
@@ -42,17 +48,22 @@ prompted for. Every target is attempted even if an earlier one fails.
 
 // Migrate runs "godwit migrate ...". args excludes the leading "migrate".
 func Migrate(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
+	return MigrateWith(ctx, svc, nil, args, out)
+}
+
+// MigrateWith is Migrate with a background runner, which --detach needs.
+func MigrateWith(ctx context.Context, svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
 	if len(args) > 0 {
 		rest := args[1:]
 		switch args[0] {
 		case "status":
 			return migrateStatus(ctx, svc, rest, out)
 		case "up":
-			return migrateMove(ctx, svc, domain.Up, rest, out)
+			return migrateMove(ctx, svc, bg, domain.Up, rest, out)
 		case "down":
-			return migrateMove(ctx, svc, domain.Down, rest, out)
+			return migrateMove(ctx, svc, bg, domain.Down, rest, out)
 		case "redo":
-			return migrateRedo(ctx, svc, rest, out)
+			return migrateRedo(ctx, svc, bg, rest, out)
 		case "clear-dirty":
 			return migrateClearDirty(ctx, svc, rest, out)
 		case "new":
@@ -145,13 +156,32 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 	})
 }
 
-func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, args []string, out io.Writer) error {
+// detachJobs starts a background worker per target and returns without
+// waiting for any of them; they keep running after this process exits.
+func detachJobs(svc *app.Service, bg app.BackgroundRunner, names []string, out io.Writer, job func(target string) domain.Job) error {
+	if bg == nil {
+		return errors.New("--detach is not available here")
+	}
+	return eachTarget(names, out, func(name string) error {
+		if svc.NeedsPassword(name) && !svc.HasPassword(name) {
+			return fmt.Errorf("no password for %q; set GODWIT_%s_PASSWORD or add it to .godwit/.env", name, strings.ToUpper(name))
+		}
+		if err := bg.Start(job(name)); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "started in the background; progress: %s\n", bg.LogPath(name))
+		return nil
+	})
+}
+
+func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner, dir domain.Direction, args []string, out io.Writer) error {
 	var n int
 	var to string
-	var batch bool
+	var batch, detach bool
 	rest, err := parseFlags(string(dir), args, func(fs *flag.FlagSet) {
 		fs.IntVar(&n, "n", 0, "")
 		fs.StringVar(&to, "to", "", "")
+		fs.BoolVar(&detach, "detach", false, "")
 		if dir == domain.Down {
 			fs.BoolVar(&batch, "batch", false, "")
 		}
@@ -178,6 +208,24 @@ func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, ar
 	if err != nil {
 		return err
 	}
+	if detach {
+		return detachJobs(svc, bg, names, out, func(target string) domain.Job {
+			j := domain.Job{Target: target, N: n, Version: version}
+			switch {
+			case dir == domain.Up && version != 0:
+				j.Op = domain.OpUpTo
+			case dir == domain.Up:
+				j.Op = domain.OpUp
+			case batch:
+				j.Op = domain.OpBatch
+			case version != 0:
+				j.Op = domain.OpDownTo
+			default:
+				j.Op = domain.OpDown
+			}
+			return j
+		})
+	}
 	prog := func(e domain.Event) { printEvent(out, e) }
 	return eachTarget(names, out, func(name string) error {
 		var done int
@@ -202,7 +250,14 @@ func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, ar
 	})
 }
 
-func migrateRedo(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
+func migrateRedo(ctx context.Context, svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
+	var detach bool
+	args, err := parseFlags("redo", args, func(fs *flag.FlagSet) {
+		fs.BoolVar(&detach, "detach", false, "")
+	})
+	if err != nil {
+		return err
+	}
 	if len(args) < 1 {
 		return fmt.Errorf("migrate redo needs a version\n\n%s", MigrateUsage)
 	}
@@ -213,6 +268,11 @@ func migrateRedo(ctx context.Context, svc *app.Service, args []string, out io.Wr
 	names, err := selectTargets(svc, args[1:])
 	if err != nil {
 		return err
+	}
+	if detach {
+		return detachJobs(svc, bg, names, out, func(target string) domain.Job {
+			return domain.Job{Target: target, Op: domain.OpRedo, Version: version}
+		})
 	}
 	prog := func(e domain.Event) { printEvent(out, e) }
 	return eachTarget(names, out, func(name string) error {

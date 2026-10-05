@@ -43,9 +43,10 @@ Plugins:
 
 Migrations:
   migrate status [target...]               show migration states
-  migrate up [-n N | --to V] [target...]   apply pending migrations
-  migrate down [-n N | --to V | --batch] [target...] roll back migrations
-  migrate redo <version> [target...]       roll back and re-apply one migration
+  migrate up [--detach] [-n N | --to V] [target...]   apply pending migrations
+  migrate down [--detach] [-n N | --to V | --batch] [target...] roll back migrations
+  migrate redo [--detach] <version> [target...]       roll back and re-apply one migration
+                                           --detach = run in the background and return
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file
 
@@ -129,7 +130,11 @@ func main() {
 			},
 		}, args[1:], os.Stdout)
 	case "migrate":
-		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
+		var bg app.BackgroundRunner // stays nil if the executable can't be found; --detach then errors
+		if runner, rerr := detach.New(root); rerr == nil {
+			bg = runner
+		}
+		err = cli.MigrateWith(context.Background(), svc, bg, args[1:], os.Stdout)
 	case detach.LaunchCommand:
 		var runner *detach.Runner
 		if runner, err = detach.New(root); err == nil {
