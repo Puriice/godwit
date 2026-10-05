@@ -355,3 +355,55 @@ func TestGoToSelectedMigration(t *testing.T) {
 		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
 	}
 }
+
+func TestPanelCycling(t *testing.T) {
+	m := testModel(t)
+	left, right := tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyRight}
+
+	m.Update(right)
+	if m.screen != scrPlugins {
+		t.Fatalf("right from targets: screen = %v, want plugins", m.screen)
+	}
+	m.Update(right)
+	if m.screen != scrTargets {
+		t.Fatalf("right from plugins should wrap to targets, got %v", m.screen)
+	}
+	m.Update(left)
+	if m.screen != scrPlugins {
+		t.Fatalf("left from targets should wrap to plugins, got %v", m.screen)
+	}
+	if v := m.View(); !strings.Contains(v, "[plugins]") || !strings.Contains(v, "No plugins") {
+		t.Errorf("plugins panel not shown:\n%s", v)
+	}
+}
+
+func TestPluginsPanelAddAndRemove(t *testing.T) {
+	m := testModel(t)
+	m.screen = scrPlugins
+
+	msg, err := m.registerPlugin(domain.PluginSpec{Name: "Demo", Command: "demo-bin"}, scopeProject)
+	if err != nil || !strings.Contains(msg, "added") {
+		t.Fatalf("register: %q, %v", msg, err)
+	}
+	if again, err := m.registerPlugin(domain.PluginSpec{Name: "demo", Command: "demo-bin"}, scopeProject); err != nil || !strings.Contains(again, "already") {
+		t.Errorf("same plugin again should be a no-op: %q, %v", again, err)
+	}
+	if _, err := m.registerPlugin(domain.PluginSpec{Name: "demo", Command: "other"}, scopeProject); err == nil {
+		t.Error("a different command under the same name should be refused")
+	}
+	if _, err := m.registerPlugin(domain.PluginSpec{Command: "x"}, scopeProject); err == nil {
+		t.Error("without a probe, a name is required")
+	}
+	if v := m.View(); !strings.Contains(v, "demo") || !strings.Contains(v, "demo-bin") {
+		t.Errorf("plugin not listed:\n%s", v)
+	}
+
+	m.Update(key("x"))
+	if m.screen != scrForm {
+		t.Fatalf("x should ask for confirmation, screen = %v", m.screen)
+	}
+	m.closeForm()
+	if len(m.svc.Plugins()) != 1 {
+		t.Error("cancelling must keep the plugin")
+	}
+}

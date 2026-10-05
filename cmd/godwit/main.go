@@ -130,7 +130,21 @@ func main() {
 	case "migrate":
 		err = cli.Migrate(context.Background(), svc, args[1:], os.Stdout)
 	default:
-		_, err = tea.NewProgram(tui.New(svc), tea.WithAltScreen()).Run()
+		model := tui.New(svc).WithPluginOps(tui.PluginOps{
+			Probe: func(spec domain.PluginSpec) (domain.DriverInfo, error) { return plugin.Probe(root, spec) },
+			Install: func(ctx context.Context, global bool, pkg string, out io.Writer) (string, error) {
+				dir := root
+				if global {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return "", err
+					}
+					dir = home
+				}
+				return plugin.Install(ctx, dir, pkg, out, out)
+			},
+		})
+		_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 	}
 	if err != nil {
 		fatal(err)

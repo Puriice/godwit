@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -19,7 +20,14 @@ const (
 	scrTargets screen = iota
 	scrMigrations
 	scrForm
+	scrPlugins
 )
+
+// panels are the top-level screens that left and right cycle through.
+var panels = []struct {
+	screen screen
+	name   string
+}{{scrTargets, "targets"}, {scrPlugins, "plugins"}}
 
 const maxLog = 200
 
@@ -65,7 +73,11 @@ type Model struct {
 	prev   screen // screen to return to when a form closes
 	cursor int    // targets list
 	mcur   int    // migrations list
+	pcur   int    // plugins list
 	notice string
+
+	pluginOps PluginOps
+	pbusy     string // shown while a plugin install runs
 
 	migCount int // migration definitions found, for display
 	migErr   error
@@ -285,6 +297,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		st.addLog(formatEvent(msg.ev))
 		return m, waitMsg(st.events)
 
+	case pluginDoneMsg:
+		m.pbusy = ""
+		if msg.err != nil {
+			m.notice = msg.err.Error()
+		} else {
+			m.notice = msg.notice
+		}
+		return m, nil
+
 	case clearedMsg:
 		if msg.err != nil {
 			m.notice = "clearing dirty flag: " + msg.err.Error()
@@ -323,6 +344,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTargets(key)
 		case scrMigrations:
 			return m.updateMigrations(key)
+		case scrPlugins:
+			return m.updatePlugins(key)
 		}
 	}
 	return m, nil
@@ -334,6 +357,8 @@ func (m *Model) View() string {
 		return m.viewForm()
 	case scrMigrations:
 		return m.viewMigrations()
+	case scrPlugins:
+		return m.viewPlugins()
 	default:
 		return m.viewTargets()
 	}
@@ -359,4 +384,27 @@ func doneWord(d domain.Direction) string {
 		return "redone"
 	}
 	return "reverted"
+}
+
+// switchPanel moves delta panels along the top-level panels, wrapping around.
+func (m *Model) switchPanel(delta int) {
+	for i, p := range panels {
+		if p.screen == m.screen {
+			m.screen = panels[(i+delta+len(panels))%len(panels)].screen
+			return
+		}
+	}
+}
+
+// tabs renders the panel names with the current one highlighted.
+func (m *Model) tabs() string {
+	var parts []string
+	for _, p := range panels {
+		if p.screen == m.screen {
+			parts = append(parts, cursorStyle.Render("["+p.name+"]"))
+		} else {
+			parts = append(parts, p.name)
+		}
+	}
+	return strings.Join(parts, " ")
 }

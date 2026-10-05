@@ -43,7 +43,7 @@ func (m *Model) header(title string) string {
 
 const (
 	helpSep        = " · "
-	targetsHelp    = "↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
+	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · n new migration · q quit"
 	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · t enable/disable · r refresh · n new · esc back"
 )
 
@@ -112,7 +112,7 @@ func targetLine(t domain.Target) string {
 
 func (m *Model) viewTargets() string {
 	var b strings.Builder
-	b.WriteString(m.header("targets"))
+	b.WriteString(m.header(m.tabs()))
 	ts := m.targets()
 	if len(ts) == 0 {
 		b.WriteString(dimStyle.Render("No targets yet. Press a to add one."))
@@ -151,6 +151,10 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "q":
 		return m, tea.Quit
+	case "left", "h":
+		m.switchPanel(-1)
+	case "right", "l":
+		m.switchPanel(1)
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
