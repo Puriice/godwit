@@ -125,6 +125,11 @@ func (c *conn) Apply(_ context.Context, m godwit.Migration) error {
 		return err
 	}
 
+	// GODWIT_JSONFILE_DELAY (a Go duration such as 2s) makes each migration take
+	// that long, so tests can observe and cancel a run that is in progress.
+	if d, err := time.ParseDuration(os.Getenv("GODWIT_JSONFILE_DELAY")); err == nil {
+		time.Sleep(d)
+	}
 	s.Log = append(s.Log, m.Statements...) // "execute" the statements
 
 	last := &s.Records[len(s.Records)-1]
