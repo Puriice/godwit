@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/puriice/godwit/internal/domain"
 )
@@ -49,33 +50,109 @@ func shortSum(s string) string {
 	return truncate(s, 9)
 }
 
+const (
+	sideMinWidth  = 70 // narrower terminals stack the detail below the list
+	sideDetailMin = 34
+	sideDetailMax = 44
+	sideGap       = 3  // spaces between the list and the detail column
+	versionCol    = 15 // width of the version column, with its trailing space
+	stateCol      = 9  // room for the one-word state in a row
+	maxName       = 24
+)
+
+// columns splits the screen into the list column and the detail column of the
+// debug panel. wide is false when the terminal is too narrow for two columns,
+// and the detail then goes below the list. It depends only on the terminal, not
+// on the tab, so both tabs lay their rows out the same way.
+//
+// The list column is exactly as wide as its rows and the detail column stops
+// growing at sideDetailMax, so on a very wide terminal the two stay together
+// at the left instead of drifting apart.
+func (m *Model) columns() (list, detail int, wide bool) {
+	if m.width < sideMinWidth {
+		return 0, 0, false
+	}
+	detail = min(max(sideDetailMin, m.width*2/5), sideDetailMax)
+	list = rowWidth(m.nameWidth())
+	return list, detail, true
+}
+
+// rowWidth is the width of a list row with a name column of nameW.
+func rowWidth(nameW int) int { return 2 + (versionCol - 1) + 1 + nameW + 1 + stateCol }
+
+// nameWidth is the width of the name column, shared by both tabs so a row's
+// version, name and state sit at the same screen columns in each. It takes
+// what the detail column and the gap leave, up to maxName.
+func (m *Model) nameWidth() int {
+	if m.width < sideMinWidth {
+		return maxName
+	}
+	detail := min(max(sideDetailMin, m.width*2/5), sideDetailMax)
+	return min(max(m.width-detail-sideGap-rowWidth(0), 6), maxName)
+}
+
+// stateWord is a short, coloured state for the compact list.
+func stateWord(it domain.Item) string {
+	switch {
+	case it.Disabled:
+		return dimStyle.Render("off")
+	case it.State == domain.Applied:
+		return okStyle.Render("applied")
+	case it.State == domain.Pending:
+		return warnStyle.Render("pending")
+	case it.State == domain.Modified:
+		return warnStyle.Render("modified")
+	case it.State == domain.Dirty:
+		return errStyle.Render("DIRTY")
+	case it.State == domain.Missing:
+		return errStyle.Render("missing")
+	}
+	return string(it.State)
+}
+
+// listRow is one line of the migration list, the same in both tabs. short
+// swaps the full state text (which may carry a reason, such as "applied (file
+// modified)") for a one-word state, so the row fits beside the detail column.
+func (m *Model) listRow(selected bool, it domain.Item, short bool) string {
+	state := badgeItem(it)
+	if short {
+		state = stateWord(it)
+	}
+	nameW := m.nameWidth()
+	return fmt.Sprintf("%s%-*d %-*s %s", pointer(selected), versionCol-1, it.Version, nameW, truncate(it.Name, nameW), state)
+}
+
 // debugDetail describes the selected migration for the debug panel: what is
-// recorded for it on the target next to what the file says.
-func (m *Model) debugDetail(st *targetState) string {
+// recorded for it on the target next to what the file says. Lines wrap to
+// width.
+func (m *Model) debugDetail(st *targetState, width int) string {
 	if m.mcur < 0 || m.mcur >= len(st.items) {
 		return ""
 	}
 	it := st.items[m.mcur]
 	var b strings.Builder
-	b.WriteRune('\n')
-	fmt.Fprintf(&b, "%s\n", titleStyle.Render(fmt.Sprintf("%d_%s", it.Version, it.Name)))
-	fmt.Fprintf(&b, "  state     %s\n", badgeItem(it))
-	fmt.Fprintf(&b, "  recorded  %s\n", recordedState(it))
+	line := func(k, v string) { fmt.Fprintf(&b, "%-10s%s\n", k, v) }
+	fmt.Fprintf(&b, "%s\n", titleStyle.Render(truncate(fmt.Sprintf("%d_%s", it.Version, it.Name), max(width, 1))))
+	line("state", badgeItem(it))
+	line("recorded", string(recordedState(it)))
 	file := "missing"
 	if it.Migration != nil {
 		file = shortSum(it.Migration.Checksum)
 	}
-	rec := "-"
-	if it.Record != nil {
-		rec = shortSum(it.Record.Checksum)
-	}
-	fmt.Fprintf(&b, "  checksum  file %s · recorded %s\n", file, rec)
+	line("file", file)
 	if r := it.Record; r != nil {
-		fmt.Fprintf(&b, "  run       batch %d · applied %s · %d ms\n", r.Batch, r.AppliedAt.Format("2006-01-02 15:04:05"), r.DurationMS)
+		line("record", shortSum(r.Checksum))
+		line("batch", fmt.Sprint(r.Batch))
+		applied := "-"
+		if !r.AppliedAt.IsZero() {
+			applied = r.AppliedAt.Format("2006-01-02 15:04:05")
+		}
+		line("applied", applied)
+		line("duration", fmt.Sprintf("%d ms", r.DurationMS))
 	}
-	b.WriteString(warnStyle.Render("  Forcing changes only the godwit_migration record, never the schema."))
 	b.WriteRune('\n')
-	return b.String()
+	b.WriteString(warnStyle.Render("Record only; schema untouched."))
+	return lipgloss.NewStyle().Width(max(width, 1)).Render(b.String())
 }
 
 // updateDebug handles keys while the debug panel is showing.

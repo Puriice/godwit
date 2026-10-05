@@ -253,27 +253,49 @@ func (m *Model) viewMigrations() string {
 	}
 
 	// Window the list so the log and the (possibly wrapped) footer still fit.
-	help, detail := migrationsHelp, ""
+	// In the debug panel the detail sits in a second column; a terminal too
+	// narrow for that gets it below the list instead.
+	help, below := migrationsHelp, ""
+	listW, detailW, wide := m.columns()
+	side := m.mdebug && wide
+	var detail string
 	if m.mdebug {
-		help, detail = debugHelp, m.debugDetail(st)
+		help = debugHelp
+		if side {
+			detail = m.debugDetail(st, detailW)
+		} else {
+			below = m.debugDetail(st, m.width)
+			if below != "" {
+				below = "\n" + below + "\n"
+			}
+		}
 	}
 	foot := m.footer(help)
 	logLines := min(len(st.log), 6)
-	room := max(m.height-11-logLines-lipgloss.Height(foot)-lipgloss.Height(detail), 3)
+	room := max(m.height-11-logLines-lipgloss.Height(foot)-lipgloss.Height(below), 3)
 	start := 0
 	if m.mcur >= room {
 		start = m.mcur - room + 1
 	}
 	end := min(start+room, len(st.items))
+	var list strings.Builder
 	for i := start; i < end; i++ {
 		it := st.items[i]
-		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.mcur), it.Version, truncate(it.Name, 24), badgeItem(it))
+		list.WriteString(m.listRow(i == m.mcur, it, side))
+		list.WriteRune('\n')
 	}
 	if len(st.items) > end {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(st.items)-end)))
-		b.WriteRune('\n')
+		list.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(st.items)-end)))
+		list.WriteRune('\n')
 	}
-	b.WriteString(detail)
+	if side && detail != "" {
+		cols := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(strings.TrimRight(list.String(), "\n")), strings.Repeat(" ", sideGap), detail)
+		b.WriteString(cols)
+		b.WriteRune('\n')
+	} else {
+		b.WriteString(list.String())
+	}
+	b.WriteString(below)
 
 	if st.runErr != nil {
 		b.WriteRune('\n')
