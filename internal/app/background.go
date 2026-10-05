@@ -10,6 +10,7 @@ import (
 // RunStatus is a snapshot of a background run's log.
 type RunStatus struct {
 	Job    domain.Job
+	Pid    int      // the worker's process id
 	Lines  []string // progress lines written since the offset passed to Poll
 	// Queued and Finished are the versions the run announced it would do, and
 	// the ones it completed, since the offset passed to Poll.
