@@ -71,6 +71,12 @@ func (r *Runner) paths(target string) (pid, log string) {
 	return filepath.Join(dir, name+".pid"), filepath.Join(dir, name+".log")
 }
 
+// LogPath is the file a target's run logs its progress to.
+func (r *Runner) LogPath(target string) string {
+	_, log := r.paths(target)
+	return log
+}
+
 // Start launches a worker for j, which keeps running if this process exits.
 // It refuses while an earlier run on the same target is still active.
 func (r *Runner) Start(j domain.Job) error {

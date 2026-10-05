@@ -27,6 +27,8 @@ type RunStatus struct {
 // earlier process. A target without a run reports a zero RunStatus.
 type BackgroundRunner interface {
 	Start(job domain.Job) error
+	// LogPath is where a target's run writes its progress.
+	LogPath(target string) string
 	Poll(target string, from int64) (RunStatus, error)
 }
 
