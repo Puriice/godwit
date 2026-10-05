@@ -178,7 +178,7 @@ func TestUpLimitAndEvents(t *testing.T) {
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
 	var evs []domain.Event
 
-	n, err := h.svc.Up(context.Background(), "t", 2, func(e domain.Event) { evs = append(evs, e) })
+	n, err := h.svc.Up(context.Background(), "t", 2, record(&evs))
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -307,7 +307,7 @@ func TestUpTo(t *testing.T) {
 	var evs []domain.Event
 
 	// Applies 1..3 inclusive, in order, and leaves 4 pending.
-	n, err := h.svc.UpTo(ctx, "t", 3, func(e domain.Event) { evs = append(evs, e) })
+	n, err := h.svc.UpTo(ctx, "t", 3, record(&evs))
 	if err != nil || n != 3 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -352,7 +352,7 @@ func TestDownTo(t *testing.T) {
 	var evs []domain.Event
 
 	// Reverts 4 then 3, newest first; 2 becomes the latest and stays applied.
-	n, err := h.svc.DownTo(ctx, "t", 2, func(e domain.Event) { evs = append(evs, e) })
+	n, err := h.svc.DownTo(ctx, "t", 2, record(&evs))
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -400,7 +400,7 @@ func TestRedo(t *testing.T) {
 	h.db.recs[2].AppliedAt = time.Time{}
 
 	var evs []domain.Event
-	if err := h.svc.Redo(ctx, "t", 2, func(e domain.Event) { evs = append(evs, e) }); err != nil {
+	if err := h.svc.Redo(ctx, "t", 2, record(&evs)); err != nil {
 		t.Fatal(err)
 	}
 

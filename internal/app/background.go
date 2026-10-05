@@ -11,7 +11,11 @@ import (
 type RunStatus struct {
 	Job    domain.Job
 	Lines  []string // progress lines written since the offset passed to Poll
-	Next   int64    // offset to pass to the next Poll
+	// Queued and Finished are the versions the run announced it would do, and
+	// the ones it completed, since the offset passed to Poll.
+	Queued   []int64
+	Finished []int64
+	Next     int64 // offset to pass to the next Poll
 	Active bool     // the worker is still running
 	Done   bool     // the worker finished and recorded its outcome
 	Count  int      // migrations completed, when Done
