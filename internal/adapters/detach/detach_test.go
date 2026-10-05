@@ -187,6 +187,30 @@ func TestDequeueRemovesOnlyThatJob(t *testing.T) {
 	}
 }
 
+func TestClearQueueEmptiesItAndLeavesTheRun(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
+	for _, j := range []domain.Job{
+		{Target: "prod", Op: domain.OpRedo, Version: 7},
+		{Target: "prod", Op: domain.OpDown, N: 1},
+	} {
+		if _, err := r.Start(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := r.ClearQueue("prod")
+	if err != nil || n != 2 {
+		t.Fatalf("ClearQueue = %d, %v; want 2", n, err)
+	}
+	st, _ := r.Poll("prod", 0)
+	if len(st.Pending) != 0 || !st.Active || st.Job.Op != domain.OpUp {
+		t.Errorf("status: %+v", st)
+	}
+	if n, err := r.ClearQueue("prod"); err != nil || n != 0 {
+		t.Errorf("clearing an empty queue = %d, %v", n, err)
+	}
+}
+
 // With A, B, A queued, removing the last A must leave A, B in that order.
 func TestDequeueRemovesTheSelectedDuplicate(t *testing.T) {
 	r := &Runner{root: t.TempDir()}

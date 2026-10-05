@@ -15,7 +15,8 @@ migration files can serve both.
   Starting another run on a target that is already running queues it: it starts
   when the current run ends well, and is dropped if that run fails or is cancelled.
   Queued jobs show in the TUI's processes tab, under their run; select one to see
-  its details and press `x` to remove it.
+  its details and press `x` to remove it, or `X` to clear the whole queue of that
+  target (the run in progress is not affected).
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 

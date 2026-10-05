@@ -11,7 +11,7 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-const processesHelp = "←/→ switch panel · ↑/↓ select · x cancel run / remove queued job · q quit"
+const processesHelp = "←/→ switch panel · ↑/↓ select · x cancel run / remove queued job · X clear queue · q quit"
 
 const (
 	barWidth      = 20
@@ -238,7 +238,7 @@ func (m *Model) queuedDetail(name string, st *targetState, idx, width int) strin
 	}
 	row("status", dimStyle.Render("queued"))
 	row("position", fmt.Sprintf("%d of %d", idx+1, len(st.pending)))
-	fmt.Fprintf(&b, "\n%s", dimStyle.Render("Starts when the run before it ends well. It is dropped if that run fails or is cancelled. x removes it."))
+	fmt.Fprintf(&b, "\n%s", dimStyle.Render("Starts when the run before it ends well. It is dropped if that run fails or is cancelled. x removes it; X clears the whole queue."))
 	return lipgloss.NewStyle().Width(max(width, 1)).Render(b.String())
 }
 
@@ -311,8 +311,46 @@ func (m *Model) updateProcesses(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.cancelRun(it.target)
 		}
+	case "X":
+		if m.prcur < len(items) {
+			return m, m.clearQueue(items[m.prcur].target)
+		}
 	}
 	return m, nil
+}
+
+// clearQueue asks for confirmation, then removes every job queued behind the
+// target's run. The run in progress is not affected.
+func (m *Model) clearQueue(t domain.Target) tea.Cmd {
+	n := len(m.state(t.Name).pending)
+	if n == 0 || m.bg == nil {
+		m.notice = "nothing is queued on " + t.Name
+		return nil
+	}
+	return m.openConfirm(fmt.Sprintf("Remove all %d queued job(s) from the queue of %q? The run in progress is not affected.", n, t.Name), func(m *Model) tea.Cmd {
+		m.clearPending(t.Name)
+		return nil
+	})
+}
+
+// clearPending empties the target's queue and puts the cursor on its run,
+// since the queued row it may have been on is gone.
+func (m *Model) clearPending(target string) {
+	st := m.state(target)
+	n, err := m.bg.ClearQueue(target)
+	if err != nil {
+		m.notice = "clear queue: " + err.Error()
+		return
+	}
+	st.pending = nil
+	for i, it := range m.processItems() {
+		if it.target.Name == target && it.queued < 0 {
+			m.prcur = i
+			break
+		}
+	}
+	st.addLog(fmt.Sprintf("－ removed %d job(s) from the queue", n))
+	m.notice = fmt.Sprintf("removed %d queued job(s) from %s", n, target)
 }
 
 // removeQueued asks for confirmation, then takes the idx'th queued job off the
