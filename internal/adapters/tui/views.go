@@ -44,7 +44,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · o run only selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
+	migrationsHelp = "↑/↓ select · ↵ migrate to selected · ␣ run only selected · N apply all · n apply next · b roll back · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -298,7 +298,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "N", "n", "b", "enter", "o", "c", "r":
+		case "N", "n", "b", "enter", " ", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -342,7 +342,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	case "enter":
 		return m, m.goTo(t, st)
-	case "o":
+	case " ":
 		return m, m.runOnly(t, st)
 	case "c":
 		if m.mcur < len(st.items) && st.items[m.mcur].State == domain.Dirty {

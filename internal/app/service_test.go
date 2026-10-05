@@ -237,9 +237,27 @@ func TestDown(t *testing.T) {
 	}
 
 	// Default n is 1; a recorded migration without a file cannot be reverted.
-	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g"}
+	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g", AppliedAt: time.Now().Add(time.Hour)}
 	if _, err := h.svc.Down(context.Background(), "t", 0, nil); err == nil {
 		t.Error("expected error reverting migration with no file")
+	}
+}
+
+func TestDownRevertsLatestApplied(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
+	h.svc.Up(ctx, "t", 0, nil)
+	// Migration 2 was applied last, even though 3 has the higher version.
+	base := time.Now()
+	h.db.recs[1].AppliedAt = base.Add(-3 * time.Hour)
+	h.db.recs[3].AppliedAt = base.Add(-2 * time.Hour)
+	h.db.recs[2].AppliedAt = base.Add(-1 * time.Hour)
+
+	if n, err := h.svc.Down(ctx, "t", 1, nil); err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if len(h.db.reverted) != 1 || h.db.reverted[0] != 2 {
+		t.Errorf("reverted = %v, want [2]", h.db.reverted)
 	}
 }
 
@@ -377,7 +395,7 @@ func TestRedoRefusals(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"))
 	h.svc.Up(ctx, "t", 1, nil) // 1 applied, 2 pending
-	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g"}
+	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g", AppliedAt: time.Now().Add(time.Hour)}
 
 	cases := map[string]int64{"pending": 2, "no such version": 42, "file missing": 9}
 	for name, v := range cases {

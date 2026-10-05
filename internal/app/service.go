@@ -506,6 +506,17 @@ func appliedNewestFirst(items []domain.Item) []domain.Item {
 	return out
 }
 
+// appliedLatestFirst returns the items recorded on the target, most recently
+// applied first. Versions break ties, so a migration created later but applied
+// earlier is not treated as the latest.
+func appliedLatestFirst(items []domain.Item) []domain.Item {
+	out := appliedNewestFirst(items)
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Record.AppliedAt.After(out[j].Record.AppliedAt)
+	})
+	return out
+}
+
 func findItem(items []domain.Item, version int64) (domain.Item, error) {
 	for _, it := range items {
 		if it.Version == version {
@@ -527,14 +538,14 @@ func (s *Service) Up(ctx context.Context, target string, limit int, prog Progres
 	})
 }
 
-// Down reverts the n most recently applied migrations (n <= 0 means 1). It
-// returns how many were reverted.
+// Down reverts the n most recently applied migrations (n <= 0 means 1), by
+// time applied rather than by version. It returns how many were reverted.
 func (s *Service) Down(ctx context.Context, target string, n int, prog Progress) (int, error) {
 	if n <= 0 {
 		n = 1
 	}
 	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
-		todo := appliedNewestFirst(items)
+		todo := appliedLatestFirst(items)
 		if len(todo) > n {
 			todo = todo[:n]
 		}

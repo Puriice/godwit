@@ -51,6 +51,8 @@ func testModel(t *testing.T) *Model {
 
 func key(s string) tea.KeyMsg {
 	switch s {
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
@@ -207,7 +209,7 @@ func TestRedoSelectedMigration(t *testing.T) {
 	// Dirty and missing migrations cannot be redone; the reason is shown.
 	for cursor, want := range map[int]string{3: "dirty", 4: "no migration file"} {
 		m.mcur, m.notice = cursor, ""
-		m.Update(key("o"))
+		m.Update(key(" "))
 		if m.screen != scrMigrations || !strings.Contains(m.notice, want) {
 			t.Errorf("cursor %d: screen=%v notice=%q, want notice containing %q", cursor, m.screen, m.notice, want)
 		}
@@ -215,7 +217,7 @@ func TestRedoSelectedMigration(t *testing.T) {
 
 	// An applied migration asks for confirmation first, and warns about later ones.
 	m.mcur = 0
-	m.Update(key("o"))
+	m.Update(key(" "))
 	if m.screen != scrForm || m.formTitle != "Confirm" {
 		t.Fatalf("expected a confirm form, screen=%v title=%q", m.screen, m.formTitle)
 	}
@@ -252,10 +254,10 @@ func TestRedoSelectedMigration(t *testing.T) {
 		t.Errorf("running=%v runErr=%v", st.running, st.runErr)
 	}
 
-	// A disabled target ignores o, like the other action keys.
+	// A disabled target ignores space, like the other action keys.
 	m.svc.SetTargetEnabled("a", false)
 	m.mcur, m.notice = 0, ""
-	m.Update(key("o"))
+	m.Update(key(" "))
 	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
 		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
 	}
