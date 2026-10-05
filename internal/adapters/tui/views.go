@@ -43,8 +43,8 @@ func (m *Model) header(title string) string {
 
 const (
 	helpSep        = " · "
-	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · p password · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · u apply all · s apply next · d roll back last · ↵ migrate to selected · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · n new · esc back"
+	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
+	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -184,10 +184,6 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if t, ok := m.currentTarget(); ok {
 			return m, m.toggleTarget(t)
 		}
-	case "p":
-		if t, ok := m.currentTarget(); ok {
-			return m, m.openPasswordForm(t)
-		}
 	case "x":
 		if t, ok := m.currentTarget(); ok {
 			return m, m.openConfirm(fmt.Sprintf("Remove target %q and its saved password? (the database is untouched)", t.Name), func(m *Model) tea.Cmd {
@@ -248,7 +244,7 @@ func (m *Model) viewMigrations() string {
 		b.WriteString(dimStyle.Render("loading…"))
 		b.WriteRune('\n')
 	case len(st.items) == 0:
-		b.WriteString(dimStyle.Render("No migrations. Press n to create one."))
+		b.WriteString(dimStyle.Render("No migrations yet."))
 		b.WriteRune('\n')
 	}
 
@@ -302,13 +298,13 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "u", "s", "d", "enter", "R", "c", "r":
+		case "N", "n", "b", "enter", "R", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
 	}
 	switch key.String() {
-	case "esc", "b", "q":
+	case "esc", "q":
 		m.screen = scrTargets
 	case "t":
 		return m, m.toggleTarget(t)
@@ -336,11 +332,11 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mcur < len(st.items)-1 {
 			m.mcur++
 		}
-	case "u":
+	case "N":
 		return m, m.run(t, domain.Up, 0)
-	case "s":
+	case "n":
 		return m, m.run(t, domain.Up, 1)
-	case "d":
+	case "b":
 		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
 			return m.run(t, domain.Down, 1)
 		})
@@ -359,8 +355,6 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.reloadMigrations()
 		return m, m.refresh(t)
-	case "n":
-		return m, m.openNewMigrationForm()
 	}
 	return m, nil
 }

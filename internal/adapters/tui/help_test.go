@@ -74,7 +74,7 @@ func TestFooterWrapsToTerminalWidth(t *testing.T) {
 	if n := strings.Count(view, "\n") + 1; n > 16 {
 		t.Errorf("migrations view is %d lines in a 16-line terminal:\n%s", n, view)
 	}
-	if !strings.Contains(strings.ReplaceAll(view, "\n", " "), "esc back") {
+	if !strings.Contains(strings.ReplaceAll(view, "\n", " "), "q back") {
 		t.Errorf("last shortcut cut off:\n%s", view)
 	}
 

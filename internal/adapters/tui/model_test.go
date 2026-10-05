@@ -115,9 +115,9 @@ func TestToggleDisableAndEnable(t *testing.T) {
 	if m.screen != scrMigrations || !strings.Contains(m.View(), "disabled") {
 		t.Errorf("migrations view:\n%s", m.View())
 	}
-	m.Update(key("u"))
+	m.Update(key("N"))
 	if st.running || !strings.Contains(m.notice, "disabled") {
-		t.Errorf("u on a disabled target: running=%v notice=%q", st.running, m.notice)
+		t.Errorf("N on a disabled target: running=%v notice=%q", st.running, m.notice)
 	}
 
 	// t on the migrations screen enables it again; a refresh is started.

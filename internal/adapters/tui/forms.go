@@ -232,24 +232,6 @@ func required(s string) error {
 	return nil
 }
 
-// openPasswordForm re-prompts for one target's password (key p).
-func (m *Model) openPasswordForm(t domain.Target) tea.Cmd {
-	var (
-		pw      string
-		persist = true
-	)
-	f := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Password for "+t.Name).EchoMode(huh.EchoModePassword).Value(&pw).Validate(required),
-		huh.NewConfirm().Title("Save to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&persist),
-	))
-	return m.openForm("Credentials", f, func(m *Model) tea.Cmd {
-		if err := m.svc.SetPassword(t.Name, pw, persist); err != nil {
-			m.notice = "saving password: " + err.Error()
-		}
-		return m.refresh(t)
-	})
-}
-
 // openConfirm asks a yes/no question and runs onYes when confirmed.
 func (m *Model) openConfirm(title string, onYes func(m *Model) tea.Cmd) tea.Cmd {
 	var ok bool
