@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/puriice/godwit/internal/app"
@@ -131,6 +132,76 @@ func TestStopWithoutARunFails(t *testing.T) {
 	r := &Runner{root: t.TempDir()}
 	if err := r.Stop("prod"); err == nil {
 		t.Error("want an error when nothing is running")
+	}
+}
+
+func TestStartQueuesBehindARunningWorker(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, os.Getpid())
+
+	redo := domain.Job{Target: "prod", Op: domain.OpRedo, Version: 7}
+	queued, err := r.Start(redo)
+	if err != nil || !queued {
+		t.Fatalf("Start = %v, %v; want queued", queued, err)
+	}
+	down := domain.Job{Target: "prod", Op: domain.OpDown, N: 1}
+	if queued, err := r.Start(down); err != nil || !queued {
+		t.Fatalf("second Start = %v, %v; want queued", queued, err)
+	}
+	st, _ := r.Poll("prod", 0)
+	if len(st.Pending) != 2 || st.Pending[0] != redo || st.Pending[1] != down {
+		t.Fatalf("pending = %+v", st.Pending)
+	}
+	if !st.Active || st.Job.Op != domain.OpUp {
+		t.Errorf("the running job was disturbed: %+v", st)
+	}
+}
+
+func TestWorkerHandsOverToTheNextQueuedJob(t *testing.T) {
+	chainGrace = 0
+	r := &Runner{root: t.TempDir(), exe: filepath.Join(t.TempDir(), "missing")}
+	job := domain.Job{Target: "prod", Op: domain.OpUp}
+	seed(t, r, job, os.Getpid())
+	if _, err := r.Start(domain.Job{Target: "prod", Op: domain.OpRedo, Version: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(domain.Job{Target: "prod", Op: domain.OpDown}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next worker cannot start here (no executable), which is reported.
+	err := r.RunWorker(context.Background(), job.Args(), func(context.Context, domain.Job, app.Progress) (int, error) {
+		return 2, nil
+	})
+	if err == nil {
+		t.Fatal("want the failure to start the queued run")
+	}
+	st, _ := r.Poll("prod", 0)
+	// The next run starts a fresh log, so the end of this one is gone.
+	if len(st.Lines) != 1 || !strings.Contains(st.Lines[0], "could not start the queued run") {
+		t.Errorf("the failure is not logged: %v", st.Lines)
+	}
+	if len(st.Pending) != 1 || st.Pending[0].Op != domain.OpDown {
+		t.Errorf("the redo was not taken off the queue: %+v", st.Pending)
+	}
+}
+
+func TestFailureDropsTheQueue(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	job := domain.Job{Target: "prod", Op: domain.OpUp}
+	seed(t, r, job, os.Getpid())
+	if _, err := r.Start(domain.Job{Target: "prod", Op: domain.OpDown}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.RunWorker(context.Background(), job.Args(), func(context.Context, domain.Job, app.Progress) (int, error) {
+		return 0, errors.New("boom")
+	})
+	st, _ := r.Poll("prod", 0)
+	if len(st.Pending) != 0 || st.More || !st.Done {
+		t.Errorf("status: %+v", st)
+	}
+	if len(st.Lines) != 1 || !strings.Contains(st.Lines[0], "1 queued job(s) dropped") {
+		t.Errorf("the drop is not logged: %v", st.Lines)
 	}
 }
 

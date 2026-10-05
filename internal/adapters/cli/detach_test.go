@@ -10,9 +10,15 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-type fakeRunner struct{ started []domain.Job }
+type fakeRunner struct {
+	started []domain.Job
+	queued  bool // Start reports the job as queued behind a run
+}
 
-func (f *fakeRunner) Start(j domain.Job) error { f.started = append(f.started, j); return nil }
+func (f *fakeRunner) Start(j domain.Job) (bool, error) {
+	f.started = append(f.started, j)
+	return f.queued, nil
+}
 func (f *fakeRunner) LogPath(t string) string  { return "runs/" + t + ".log" }
 func (f *fakeRunner) Stop(string) error        { return nil }
 func (f *fakeRunner) Poll(string, int64) (app.RunStatus, error) {
@@ -60,6 +66,17 @@ func TestDetachStartsJobs(t *testing.T) {
 		if !strings.Contains(out.String(), ".log") {
 			t.Errorf("%v: output does not say where progress goes: %q", c.args, out.String())
 		}
+	}
+}
+
+func TestDetachSaysWhenTheJobWasQueued(t *testing.T) {
+	bg := &fakeRunner{queued: true}
+	var out bytes.Buffer
+	if err := MigrateWith(context.Background(), newSvc(t), bg, []string{"up", "--detach"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "queued") {
+		t.Errorf("output = %q", out.String())
 	}
 }
 

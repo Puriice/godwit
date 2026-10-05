@@ -12,6 +12,9 @@ migration files can serve both.
 - **Runs survive quitting:** the TUI runs migrations in a detached worker process, so
   quitting (even closing the terminal) doesn't interrupt them. Reopen the TUI to see
   the target still running. Progress is logged in `.godwit/runs/<target>.log`.
+  Starting another run on a target that is already running queues it: it starts
+  when the current run ends well, and is dropped if that run fails or is cancelled.
+  Queued jobs show in the TUI's processes tab.
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 

@@ -78,20 +78,126 @@ func (r *Runner) LogPath(target string) string {
 	return log
 }
 
-// Start launches a worker for j, which keeps running if this process exits.
-// It refuses while an earlier run on the same target is still active.
-func (r *Runner) Start(j domain.Job) error {
-	pidFile, logFile := r.paths(j.Target)
-	if st, _ := r.Poll(j.Target, 0); st.Active {
-		return fmt.Errorf("%s already has a run in progress", j.Target)
+// chainGrace is how long a finished worker waits before handing over to the
+// next queued job, so that anyone following the log sees the run end first:
+// the next run starts a fresh log.
+var chainGrace = time.Second
+
+// handoverWait bounds how long Start waits for a worker that is just exiting.
+const handoverWait = 5 * time.Second
+
+// nextLine marks a run that hands over to a queued job.
+const nextLine = "-- next"
+
+func (r *Runner) queueFile(target string) string {
+	pid, _ := r.paths(target)
+	return strings.TrimSuffix(pid, ".pid") + ".queue"
+}
+
+// lock serialises changes to a target's queue and run files between this
+// program and its worker. The returned function releases it.
+func (r *Runner) lock(target string) (func(), error) {
+	pid, _ := r.paths(target)
+	file := strings.TrimSuffix(pid, ".pid") + ".lock"
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return nil, err
 	}
+	deadline := time.Now().Add(handoverWait)
+	for {
+		f, err := os.OpenFile(file, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			f.Close()
+			return func() { os.Remove(file) }, nil //nolint:errcheck // best effort
+		}
+		if time.Now().After(deadline) {
+			// Held for far longer than any holder needs: left by a crash.
+			if err := os.Remove(file); err != nil {
+				return nil, err
+			}
+			deadline = time.Now().Add(handoverWait)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// readQueue lists the jobs waiting on target, oldest first.
+func (r *Runner) readQueue(target string) []domain.Job {
+	data, err := os.ReadFile(r.queueFile(target))
+	if err != nil {
+		return nil
+	}
+	var jobs []domain.Job
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if j, err := domain.ParseJob(strings.Fields(line)); err == nil {
+			jobs = append(jobs, j)
+		}
+	}
+	return jobs
+}
+
+func (r *Runner) writeQueue(target string, jobs []domain.Job) error {
+	file := r.queueFile(target)
+	if len(jobs) == 0 {
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	var b strings.Builder
+	for _, j := range jobs {
+		b.WriteString(strings.Join(j.Args(), " "))
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(file, []byte(b.String()), 0o644)
+}
+
+// busy reports whether target has a live worker, even one that has already
+// logged its end and is about to exit or to hand over.
+func (r *Runner) busy(target string) bool {
+	st, _ := r.Poll(target, 0)
+	return st.Pid != 0 && alive(st.Pid)
+}
+
+// Start launches a worker for j, which keeps running if this process exits.
+// While the target has a run, j is queued behind it instead.
+func (r *Runner) Start(j domain.Job) (bool, error) {
+	unlock, err := r.lock(j.Target)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	if r.busy(j.Target) {
+		if st, _ := r.Poll(j.Target, 0); st.Done && !st.More {
+			// The worker has decided there is nothing more to do and is on its
+			// way out; wait for it rather than queue behind nobody.
+			deadline := time.Now().Add(handoverWait)
+			for r.busy(j.Target) && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	}
+	if r.busy(j.Target) {
+		queue := append(r.readQueue(j.Target), j)
+		return true, r.writeQueue(j.Target, queue)
+	}
+	r.writeQueue(j.Target, nil) //nolint:errcheck // jobs queued behind a worker that died
+	return false, r.spawn(j, false)
+}
+
+// spawn starts the worker for j with a fresh log. chained is set by the
+// previous worker, which is still alive: its record stays until the new one
+// replaces it, so the target never looks idle in between.
+func (r *Runner) spawn(j domain.Job, chained bool) error {
+	pidFile, logFile := r.paths(j.Target)
 	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(logFile, nil, 0o644); err != nil {
 		return err
 	}
-	os.Remove(pidFile)                //nolint:errcheck // a stale record of the previous run
+	if !chained {
+		os.Remove(pidFile) //nolint:errcheck // a stale record of the previous run
+	}
 	os.Remove(r.cancelFile(j.Target)) //nolint:errcheck // and its cancel request
 	// The worker is started by a short-lived launcher, not by this process.
 	// Once the launcher exits the worker has no live parent, so killing this
@@ -152,11 +258,15 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	if from < 0 || from > int64(len(data)) {
 		from = 0
 	}
-	st := app.RunStatus{Job: job, Pid: pid, Next: from}
+	st := app.RunStatus{Job: job, Pid: pid, Next: from, Pending: r.readQueue(target)}
 	data = data[from:]
 	if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
 		st.Next += int64(i + 1)
 		for line := range strings.SplitSeq(string(data[:i]), "\n") {
+			if line == nextLine {
+				st.More = true
+				continue
+			}
 			if rest, ok := strings.CutPrefix(line, finishedPrefix); ok {
 				st.Done = true
 				st.Count, st.Err, st.Cancelled = parseFinished(rest)
@@ -252,16 +362,45 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 	defer cancel()
 	go r.watchCancel(ctx, job.Target, cancel)
 	n, runErr := run(ctx, job, prog)
+
+	// Deciding what follows and logging the end happen under the lock, so a
+	// Start that sees the run still going queues its job where this worker
+	// will find it.
+	unlock, lockErr := r.lock(job.Target)
+	if lockErr != nil {
+		unlock = func() {}
+	}
+	var next *domain.Job
 	if runErr != nil {
+		// The jobs behind a failed or cancelled one may depend on it.
+		if dropped := len(r.readQueue(job.Target)); dropped > 0 {
+			fmt.Fprintf(f, "! %d queued job(s) dropped\n", dropped)
+			r.writeQueue(job.Target, nil) //nolint:errcheck // best effort
+		}
 		msg := strings.Join(strings.Fields(runErr.Error()), " ")
 		word := "failed"
 		if ctx.Err() != nil { // cancelled from outside, not failed on its own
 			word = "cancelled"
 		}
 		fmt.Fprintf(f, "%s%s %d %s\n", finishedPrefix, word, n, msg)
+		unlock()
 		return runErr
 	}
+	if queue := r.readQueue(job.Target); len(queue) > 0 {
+		next = &queue[0]
+		r.writeQueue(job.Target, queue[1:]) //nolint:errcheck // best effort
+		fmt.Fprintln(f, nextLine)
+	}
 	fmt.Fprintf(f, "%sok %d\n", finishedPrefix, n)
+	unlock()
+
+	if next != nil {
+		time.Sleep(chainGrace)
+		if err := r.spawn(*next, true); err != nil {
+			fmt.Fprintf(f, "✗ could not start the queued run: %v\n", err)
+			return err
+		}
+	}
 	return nil
 }
 

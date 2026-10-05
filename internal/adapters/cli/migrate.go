@@ -166,8 +166,13 @@ func detachJobs(svc *app.Service, bg app.BackgroundRunner, names []string, out i
 		if svc.NeedsPassword(name) && !svc.HasPassword(name) {
 			return fmt.Errorf("no password for %q; set GODWIT_%s_PASSWORD or add it to .godwit/.env", name, strings.ToUpper(name))
 		}
-		if err := bg.Start(job(name)); err != nil {
+		queued, err := bg.Start(job(name))
+		if err != nil {
 			return err
+		}
+		if queued {
+			fmt.Fprintf(out, "queued behind the run in progress; it starts when that run ends well. progress: %s\n", bg.LogPath(name))
+			return nil
 		}
 		fmt.Fprintf(out, "started in the background; progress: %s\n", bg.LogPath(name))
 		return nil
