@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/puriice/godwit/internal/app"
 	"github.com/puriice/godwit/internal/domain"
@@ -90,7 +91,8 @@ func (r *Runner) Start(j domain.Job) error {
 	if err := os.WriteFile(logFile, nil, 0o644); err != nil {
 		return err
 	}
-	os.Remove(pidFile) //nolint:errcheck // a stale record of the previous run
+	os.Remove(pidFile)                //nolint:errcheck // a stale record of the previous run
+	os.Remove(r.cancelFile(j.Target)) //nolint:errcheck // and its cancel request
 	// The worker is started by a short-lived launcher, not by this process.
 	// Once the launcher exits the worker has no live parent, so killing this
 	// process's tree (a closing terminal, taskkill /T) cannot reach it.
@@ -157,7 +159,7 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 		for line := range strings.SplitSeq(string(data[:i]), "\n") {
 			if rest, ok := strings.CutPrefix(line, finishedPrefix); ok {
 				st.Done = true
-				st.Count, st.Err = parseFinished(rest)
+				st.Count, st.Err, st.Cancelled = parseFinished(rest)
 				continue
 			}
 			if rest, ok := strings.CutPrefix(line, queuedPrefix); ok {
@@ -176,22 +178,59 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	}
 	if !st.Done {
 		st.Active = alive(pid)
+		if _, err := os.Stat(r.cancelFile(target)); err == nil {
+			st.Cancelling = st.Active
+		}
 	}
 	return st, nil
 }
 
-// parseFinished decodes "ok <n>" or "failed <n> <message>".
-func parseFinished(s string) (count int, errMsg string) {
+// parseFinished decodes "ok <n>", "failed <n> <message>" or
+// "cancelled <n> <message>".
+func parseFinished(s string) (count int, errMsg string, cancelled bool) {
 	word, rest, _ := strings.Cut(s, " ")
 	num, msg, _ := strings.Cut(rest, " ")
 	count, _ = strconv.Atoi(num)
 	if word != "ok" {
 		errMsg = msg
 		if errMsg == "" {
-			errMsg = "failed"
+			errMsg = word
 		}
 	}
-	return count, errMsg
+	return count, errMsg, word == "cancelled"
+}
+
+func (r *Runner) cancelFile(target string) string {
+	pid, _ := r.paths(target)
+	return strings.TrimSuffix(pid, ".pid") + ".cancel"
+}
+
+// Stop asks target's worker to cancel its run. The worker cancels the context
+// of the migration it is executing and records the run as cancelled, so a
+// statement in flight is aborted and no further migration starts.
+func (r *Runner) Stop(target string) error {
+	if st, _ := r.Poll(target, 0); !st.Active {
+		return fmt.Errorf("%s has no run in progress", target)
+	}
+	return os.WriteFile(r.cancelFile(target), nil, 0o644)
+}
+
+// watchCancel cancels ctx when target's cancel file appears.
+func (r *Runner) watchCancel(ctx context.Context, target string, cancel context.CancelFunc) {
+	file := r.cancelFile(target)
+	t := time.NewTicker(200 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := os.Stat(file); err == nil {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 // RunWorker is the body of a worker process: it performs the job described by
@@ -209,10 +248,17 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 	}
 	defer f.Close()
 	prog := func(e domain.Event) { fmt.Fprintln(f, FormatEvent(e)) }
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.watchCancel(ctx, job.Target, cancel)
 	n, runErr := run(ctx, job, prog)
 	if runErr != nil {
 		msg := strings.Join(strings.Fields(runErr.Error()), " ")
-		fmt.Fprintf(f, "%sfailed %d %s\n", finishedPrefix, n, msg)
+		word := "failed"
+		if ctx.Err() != nil { // cancelled from outside, not failed on its own
+			word = "cancelled"
+		}
+		fmt.Fprintf(f, "%s%s %d %s\n", finishedPrefix, word, n, msg)
 		return runErr
 	}
 	fmt.Fprintf(f, "%sok %d\n", finishedPrefix, n)

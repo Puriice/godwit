@@ -95,3 +95,53 @@ func TestDeadWorkerIsNotActive(t *testing.T) {
 		t.Fatalf("status: %+v", st)
 	}
 }
+
+func TestStopCancelsTheRunningWorker(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	job := domain.Job{Target: "prod", Op: domain.OpUp}
+	seed(t, r, job, os.Getpid())
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- r.RunWorker(context.Background(), job.Args(), func(ctx context.Context, _ domain.Job, _ app.Progress) (int, error) {
+			close(started)
+			<-ctx.Done() // a statement in flight, aborted by the cancellation
+			return 1, ctx.Err()
+		})
+	}()
+	<-started
+
+	if err := r.Stop("prod"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.Poll("prod", 0); !st.Cancelling {
+		t.Errorf("not reported as cancelling: %+v", st)
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("worker error = %v", err)
+	}
+	st, _ := r.Poll("prod", 0)
+	if !st.Done || !st.Cancelled || st.Count != 1 || st.Err == "" || st.Cancelling {
+		t.Errorf("after cancel: %+v", st)
+	}
+}
+
+func TestStopWithoutARunFails(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	if err := r.Stop("prod"); err == nil {
+		t.Error("want an error when nothing is running")
+	}
+}
+
+func TestAFailureIsNotCancelled(t *testing.T) {
+	r := &Runner{root: t.TempDir()}
+	job := domain.Job{Target: "prod", Op: domain.OpUp}
+	seed(t, r, job, os.Getpid())
+	_ = r.RunWorker(context.Background(), job.Args(), func(context.Context, domain.Job, app.Progress) (int, error) {
+		return 0, errors.New("boom")
+	})
+	if st, _ := r.Poll("prod", 0); !st.Done || st.Cancelled || st.Err != "boom" {
+		t.Errorf("status: %+v", st)
+	}
+}

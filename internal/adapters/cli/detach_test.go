@@ -14,6 +14,7 @@ type fakeRunner struct{ started []domain.Job }
 
 func (f *fakeRunner) Start(j domain.Job) error { f.started = append(f.started, j); return nil }
 func (f *fakeRunner) LogPath(t string) string  { return "runs/" + t + ".log" }
+func (f *fakeRunner) Stop(string) error        { return nil }
 func (f *fakeRunner) Poll(string, int64) (app.RunStatus, error) {
 	return app.RunStatus{}, nil
 }

@@ -23,6 +23,7 @@ const (
 	scrMigrations
 	scrForm
 	scrFiles
+	scrProcesses
 	scrPlugins
 )
 
@@ -30,7 +31,7 @@ const (
 var panels = []struct {
 	screen screen
 	name   string
-}{{scrTargets, "targets"}, {scrFiles, "migrations"}, {scrPlugins, "plugins"}}
+}{{scrTargets, "targets"}, {scrFiles, "migrations"}, {scrProcesses, "processes"}, {scrPlugins, "plugins"}}
 
 const maxLog = 200
 
@@ -50,6 +51,8 @@ type (
 		dir    domain.Direction
 		n      int
 		err    error
+		// cancelled is set when the run ended because the user cancelled it.
+		cancelled bool
 	}
 	clearedMsg struct {
 		target string
@@ -94,8 +97,22 @@ type targetState struct {
 	// What the processes panel shows about the latest run: kept after it
 	// ends, until the next one starts.
 	job         domain.Job
-	pid         int // the background worker's process id; 0 when unknown
-	total, done int // migrations the run announced, and how many it completed
+	pid         int                // the background worker's process id; 0 when unknown
+	total, done int                // migrations the run announced, and how many it completed
+	order       []int64            // the versions the run announced, in the order it takes them
+	finished    map[int64]bool     // the ones it has completed
+	cancelling  bool               // a cancel was requested; the run has not stopped yet
+	cancelled   bool               // the latest run ended because it was cancelled
+	cancel      context.CancelFunc // cancels an in-process run; nil otherwise
+}
+
+// begin resets what is tracked about a run, for one that is starting or has
+// just been found already running. pid is 0 when not known yet.
+func (st *targetState) begin(job domain.Job, pid int) {
+	st.job, st.pid, st.redo = job, pid, job.Op == domain.OpRedo
+	st.queue, st.order, st.finished = nil, nil, nil
+	st.total, st.done = 0, 0
+	st.cancelling, st.cancelled = false, false
 }
 
 // markRunning shows the migrations of the current run as running. Without it
@@ -123,10 +140,15 @@ func (st *targetState) track(queued, finished []int64, keepFinished bool) {
 		st.queue[v] = true
 	}
 	if !keepFinished {
+		if st.finished == nil {
+			st.finished = map[int64]bool{}
+		}
+		st.order = append(st.order, queued...)
 		st.total += len(queued)
 		st.done += len(finished)
 		for _, v := range finished {
 			delete(st.queue, v)
+			st.finished[v] = true
 		}
 	}
 }
@@ -141,6 +163,7 @@ type Model struct {
 	mcur   int    // migrations list
 	mdebug bool   // the migrations screen shows its debug panel
 	fcur   int    // migration files list
+	prcur  int    // processes list
 	pcur   int    // plugins list
 	notice string
 
@@ -320,8 +343,7 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 		return nil
 	}
 	st.running, st.err, st.runErr = true, nil, nil
-	st.queue, st.redo = nil, job.Op == domain.OpRedo
-	st.job, st.pid, st.total, st.done = job, 0, 0, 0
+	st.begin(job, 0)
 	if st.redo {
 		st.track([]int64{job.Version}, nil, true)
 	}
@@ -338,11 +360,14 @@ func (m *Model) startRun(t domain.Target, job domain.Job) tea.Cmd {
 	st.events = ch
 
 	svc := m.svc
+	ctx, cancel := context.WithCancel(context.Background())
+	st.cancel = cancel
 	go func() {
 		defer close(ch)
+		defer cancel()
 		prog := func(e domain.Event) { ch <- progressMsg{target: t.Name, ev: e} }
-		n, err := svc.RunJob(context.Background(), job, prog)
-		ch <- runDoneMsg{target: t.Name, dir: dir, n: n, err: err}
+		n, err := svc.RunJob(ctx, job, prog)
+		ch <- runDoneMsg{target: t.Name, dir: dir, n: n, err: err, cancelled: ctx.Err() != nil && err != nil}
 	}()
 	return waitMsg(ch)
 }
@@ -439,8 +464,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		st.running, st.err, st.runErr = true, nil, nil
-		st.queue, st.redo = nil, msg.st.Job.Op == domain.OpRedo
-		st.job, st.pid, st.total, st.done = msg.st.Job, msg.st.Pid, 0, 0
+		st.begin(msg.st.Job, msg.st.Pid)
 		st.addLog(fmt.Sprintf("— %s (still running in the background) —", msg.st.Job.Direction()))
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
@@ -460,7 +484,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		done := func(err error) (tea.Model, tea.Cmd) {
-			return m.Update(runDoneMsg{target: msg.target, dir: msg.st.Job.Direction(), n: msg.st.Count, err: err})
+			return m.Update(runDoneMsg{target: msg.target, dir: msg.st.Job.Direction(), n: msg.st.Count, err: err, cancelled: msg.st.Cancelled})
 		}
 		if msg.err != nil {
 			return done(msg.err)
@@ -468,7 +492,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, l := range msg.st.Lines {
 			st.addLog(l)
 		}
-		st.pid = msg.st.Pid
+		st.pid, st.cancelling = msg.st.Pid, msg.st.Cancelling
 		st.trackJob(msg.st)
 		st.markRunning()
 		var refresh tea.Cmd
@@ -521,10 +545,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runDoneMsg:
 		st := m.state(msg.target)
-		st.running, st.events, st.queue = false, nil, nil
+		st.running, st.events, st.queue, st.cancel = false, nil, nil, nil
+		st.cancelled = msg.cancelled || (st.cancelling && msg.err != nil)
+		st.cancelling = false
 		if msg.err != nil {
 			st.runErr = msg.err
-			st.addLog("✗ " + msg.err.Error())
+			if st.cancelled {
+				st.addLog("■ cancelled: " + msg.err.Error())
+			} else {
+				st.addLog("✗ " + msg.err.Error())
+			}
 		} else {
 			st.addLog(fmt.Sprintf("✓ %d migration(s) %s", msg.n, doneWord(msg.dir)))
 		}
@@ -549,6 +579,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateMigrations(key)
 		case scrFiles:
 			return m.updateFiles(key)
+		case scrProcesses:
+			return m.updateProcesses(key)
 		case scrPlugins:
 			return m.updatePlugins(key)
 		}
@@ -564,6 +596,8 @@ func (m *Model) View() string {
 		return m.viewMigrations()
 	case scrFiles:
 		return m.viewFiles()
+	case scrProcesses:
+		return m.viewProcesses()
 	case scrPlugins:
 		return m.viewPlugins()
 	default:
