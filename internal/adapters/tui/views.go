@@ -44,7 +44,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · o run only selected · R redo selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
+	migrationsHelp = "↑/↓ select · ↵ migrate to selected · N apply all · n apply next · b roll back last · o run only selected · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -298,7 +298,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "N", "n", "b", "enter", "R", "o", "c", "r":
+		case "N", "n", "b", "enter", "o", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -342,8 +342,6 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	case "enter":
 		return m, m.goTo(t, st)
-	case "R":
-		return m, m.confirmRedo(t, st)
 	case "o":
 		return m, m.runOnly(t, st)
 	case "c":

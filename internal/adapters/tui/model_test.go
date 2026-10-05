@@ -204,10 +204,10 @@ func TestRedoSelectedMigration(t *testing.T) {
 	}
 	m.screen = scrMigrations // target "a" is selected
 
-	// Pending, dirty and missing migrations cannot be redone; the reason is shown.
-	for cursor, want := range map[int]string{2: "not applied yet", 3: "dirty", 4: "no migration file"} {
+	// Dirty and missing migrations cannot be redone; the reason is shown.
+	for cursor, want := range map[int]string{3: "dirty", 4: "no migration file"} {
 		m.mcur, m.notice = cursor, ""
-		m.Update(key("R"))
+		m.Update(key("o"))
 		if m.screen != scrMigrations || !strings.Contains(m.notice, want) {
 			t.Errorf("cursor %d: screen=%v notice=%q, want notice containing %q", cursor, m.screen, m.notice, want)
 		}
@@ -215,7 +215,7 @@ func TestRedoSelectedMigration(t *testing.T) {
 
 	// An applied migration asks for confirmation first, and warns about later ones.
 	m.mcur = 0
-	m.Update(key("R"))
+	m.Update(key("o"))
 	if m.screen != scrForm || m.formTitle != "Confirm" {
 		t.Fatalf("expected a confirm form, screen=%v title=%q", m.screen, m.formTitle)
 	}
@@ -252,10 +252,10 @@ func TestRedoSelectedMigration(t *testing.T) {
 		t.Errorf("running=%v runErr=%v", st.running, st.runErr)
 	}
 
-	// A disabled target ignores R, like the other action keys.
+	// A disabled target ignores o, like the other action keys.
 	m.svc.SetTargetEnabled("a", false)
 	m.mcur, m.notice = 0, ""
-	m.Update(key("R"))
+	m.Update(key("o"))
 	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
 		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
 	}
