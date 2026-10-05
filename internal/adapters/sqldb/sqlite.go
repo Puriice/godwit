@@ -48,7 +48,8 @@ func openSQLite(ctx context.Context, t domain.Target, _ string) (*conn, error) {
 	checksum    TEXT      NOT NULL,
 	applied_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	duration_ms INTEGER   NOT NULL DEFAULT 0,
-	dirty       BOOLEAN   NOT NULL DEFAULT FALSE
+	dirty       BOOLEAN   NOT NULL DEFAULT FALSE,
+	batch       INTEGER   NOT NULL DEFAULT 0
 )`,
 		// SQLite has no advisory locks. The database file is already locked
 		// per write, and the version primary key rejects a duplicate apply.

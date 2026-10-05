@@ -50,7 +50,8 @@ func openMySQL(ctx context.Context, t domain.Target, password string) (*conn, er
 	checksum    CHAR(64)     NOT NULL,
 	applied_at  TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 	duration_ms BIGINT       NOT NULL DEFAULT 0,
-	dirty       BOOLEAN      NOT NULL DEFAULT FALSE
+	dirty       BOOLEAN      NOT NULL DEFAULT FALSE,
+	batch       BIGINT       NOT NULL DEFAULT 0
 )`,
 		lock: func(ctx context.Context, c *sql.Conn) (func() error, error) {
 			var got sql.NullInt64

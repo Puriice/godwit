@@ -461,6 +461,7 @@ func (s *Service) execute(ctx context.Context, target string, dir domain.Directi
 		}
 	}
 
+	batch := nextBatch(items)
 	for _, it := range todo {
 		if err := ctx.Err(); err != nil {
 			return done, err
@@ -468,7 +469,9 @@ func (s *Service) execute(ctx context.Context, target string, dir domain.Directi
 		ev := domain.Event{Direction: dir, Version: it.Version, Name: it.Name, Phase: domain.Started}
 		prog.emit(ev)
 		if dir == domain.Up {
-			err = db.Apply(ctx, it.Migration)
+			m := *it.Migration
+			m.Batch = batch
+			err = db.Apply(ctx, &m)
 		} else {
 			err = db.Revert(ctx, it.Migration)
 		}
@@ -517,6 +520,39 @@ func appliedLatestFirst(items []domain.Item) []domain.Item {
 	return out
 }
 
+// nextBatch returns the number for a new apply run: one past the highest batch
+// recorded on the target.
+func nextBatch(items []domain.Item) int64 {
+	var max int64
+	for _, it := range items {
+		if it.Record != nil && it.Record.Batch > max {
+			max = it.Record.Batch
+		}
+	}
+	return max + 1
+}
+
+// LatestBatch returns the migrations of the most recent apply run, newest
+// first: the most recently applied migration and every other one recorded in
+// the same batch. A migration recorded without a batch (0) stands alone.
+func LatestBatch(items []domain.Item) []domain.Item {
+	latest := appliedLatestFirst(items)
+	if len(latest) == 0 {
+		return nil
+	}
+	batch := latest[0].Record.Batch
+	if batch == 0 {
+		return latest[:1]
+	}
+	var out []domain.Item
+	for _, it := range latest {
+		if it.Record.Batch == batch {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 func findItem(items []domain.Item, version int64) (domain.Item, error) {
 	for _, it := range items {
 		if it.Version == version {
@@ -550,6 +586,15 @@ func (s *Service) Down(ctx context.Context, target string, n int, prog Progress)
 			todo = todo[:n]
 		}
 		return todo, nil
+	})
+}
+
+// DownBatch reverts the most recent apply run: every migration applied in the
+// same batch as the most recently applied one, newest first. It returns how
+// many were reverted.
+func (s *Service) DownBatch(ctx context.Context, target string, prog Progress) (int, error) {
+	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+		return LatestBatch(items), nil
 	})
 }
 
@@ -666,7 +711,12 @@ func (s *Service) Redo(ctx context.Context, target string, version int64, prog P
 	if err := step(domain.Down, db.Revert); err != nil {
 		return fmt.Errorf("%d_%s: revert failed: %w", it.Version, it.Name, err)
 	}
-	if err := step(domain.Up, db.Apply); err != nil {
+	reapply := func(ctx context.Context, m *domain.Migration) error {
+		again := *m
+		again.Batch = it.Record.Batch // it stays in its original batch
+		return db.Apply(ctx, &again)
+	}
+	if err := step(domain.Up, reapply); err != nil {
 		return fmt.Errorf("%d_%s: re-apply failed after the revert, so the migration is now reverted: %w", it.Version, it.Name, err)
 	}
 	return nil

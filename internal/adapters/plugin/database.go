@@ -48,7 +48,7 @@ func (d *database) Applied(ctx context.Context) ([]domain.Record, error) {
 	out := make([]domain.Record, 0, len(res.Records))
 	for _, r := range res.Records {
 		out = append(out, domain.Record{Version: r.Version, Name: r.Name, Checksum: r.Checksum,
-			AppliedAt: r.AppliedAt, DurationMS: r.DurationMS, Dirty: r.Dirty})
+			AppliedAt: r.AppliedAt, DurationMS: r.DurationMS, Dirty: r.Dirty, Batch: r.Batch})
 	}
 	return out, nil
 }
@@ -74,5 +74,5 @@ func wire(m *domain.Migration, stmts []string) wireMigration {
 		stmts = []string{}
 	}
 	return wireMigration{Version: m.Version, Name: m.Name, Checksum: m.Checksum,
-		NoTransaction: m.NoTransaction, Statements: stmts}
+		NoTransaction: m.NoTransaction, Statements: stmts, Batch: m.Batch}
 }

@@ -80,7 +80,16 @@ type conn struct {
 func (c *conn) Close() error { return c.db.Close() }
 
 func (c *conn) EnsureTable(ctx context.Context) error {
-	_, err := c.db.ExecContext(ctx, c.d.createTable)
+	if _, err := c.db.ExecContext(ctx, c.d.createTable); err != nil {
+		return err
+	}
+	// Tables created before batches existed lack the column; add it with 0
+	// ("unknown") for the old rows.
+	rows, err := c.db.QueryContext(ctx, "SELECT batch FROM "+Table+" WHERE 1 = 0")
+	if err == nil {
+		return rows.Close()
+	}
+	_, err = c.db.ExecContext(ctx, "ALTER TABLE "+Table+" ADD COLUMN batch BIGINT NOT NULL DEFAULT 0")
 	return err
 }
 
@@ -106,7 +115,7 @@ func (c *conn) Lock(ctx context.Context) (func() error, error) {
 
 func (c *conn) Applied(ctx context.Context) ([]domain.Record, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT version, name, checksum, applied_at, duration_ms, dirty FROM "+Table+" ORDER BY version")
+		"SELECT version, name, checksum, applied_at, duration_ms, dirty, batch FROM "+Table+" ORDER BY version")
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +123,7 @@ func (c *conn) Applied(ctx context.Context) ([]domain.Record, error) {
 	var out []domain.Record
 	for rows.Next() {
 		var r domain.Record
-		if err := rows.Scan(&r.Version, &r.Name, &r.Checksum, &r.AppliedAt, &r.DurationMS, &r.Dirty); err != nil {
+		if err := rows.Scan(&r.Version, &r.Name, &r.Checksum, &r.AppliedAt, &r.DurationMS, &r.Dirty, &r.Batch); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -129,9 +138,9 @@ type execer interface {
 func (c *conn) insert(ctx context.Context, e execer, m *domain.Migration, dirty bool, ms int64) error {
 	p := c.d.placeholder
 	_, err := e.ExecContext(ctx,
-		fmt.Sprintf("INSERT INTO %s (version, name, checksum, duration_ms, dirty) VALUES (%s, %s, %s, %s, %s)",
-			Table, p(1), p(2), p(3), p(4), p(5)),
-		m.Version, m.Name, m.Checksum, ms, dirty)
+		fmt.Sprintf("INSERT INTO %s (version, name, checksum, duration_ms, dirty, batch) VALUES (%s, %s, %s, %s, %s, %s)",
+			Table, p(1), p(2), p(3), p(4), p(5), p(6)),
+		m.Version, m.Name, m.Checksum, ms, dirty, m.Batch)
 	return err
 }
 

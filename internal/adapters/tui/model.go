@@ -230,6 +230,14 @@ func (m *Model) downTo(t domain.Target, version int64) tea.Cmd {
 	})
 }
 
+// downBatch rolls back the latest apply run.
+func (m *Model) downBatch(t domain.Target) tea.Cmd {
+	svc := m.svc
+	return m.startRun(t, domain.Down, func(ctx context.Context, prog app.Progress) (int, error) {
+		return svc.DownBatch(ctx, t.Name, prog)
+	})
+}
+
 // applyOnly applies just one pending migration.
 func (m *Model) applyOnly(t domain.Target, version int64) tea.Cmd {
 	svc := m.svc

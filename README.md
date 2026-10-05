@@ -100,7 +100,7 @@ Plugins:
 Migrations:
   migrate status [target...]               show migration states
   migrate up [-n N | --to V] [target...]   apply pending migrations
-  migrate down [-n N | --to V] [target...] roll back migrations
+  migrate down [-n N | --to V | --batch] [target...] roll back migrations (--batch: the latest run)
   migrate redo <version> [target...]       roll back and re-apply one migration
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file

@@ -76,6 +76,9 @@ type Migration struct {
 	Up            []Statement
 	Down          []Statement
 	NoTransaction bool
+	// Batch is the run this migration is being applied in. The service sets it
+	// just before applying; migration files do not carry one.
+	Batch int64
 }
 
 // UpSQL returns the Up statements that apply to driver, in order.
@@ -103,6 +106,9 @@ type Record struct {
 	AppliedAt  time.Time
 	DurationMS int64
 	Dirty      bool
+	// Batch numbers the apply run that recorded this migration. Rows written
+	// before batches existed (or by drivers that do not store one) have 0.
+	Batch int64
 }
 
 // State describes a migration relative to a target.

@@ -66,6 +66,8 @@ type wireMigration struct {
 	Checksum      string   `json:"checksum"`
 	NoTransaction bool     `json:"noTransaction,omitempty"`
 	Statements    []string `json:"statements"`
+	// Batch is the apply run this migration belongs to (0 when not applying).
+	Batch int64 `json:"batch,omitempty"`
 }
 
 type migrationParams struct {
@@ -83,6 +85,7 @@ type wireRecord struct {
 	AppliedAt  time.Time `json:"appliedAt"`
 	DurationMS int64     `json:"durationMs"`
 	Dirty      bool      `json:"dirty"`
+	Batch      int64     `json:"batch,omitempty"`
 }
 
 type appliedResult struct {

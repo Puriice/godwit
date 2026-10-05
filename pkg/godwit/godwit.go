@@ -72,6 +72,9 @@ type Record struct {
 	AppliedAt  time.Time
 	DurationMS int64
 	Dirty      bool
+	// Batch is the apply run that recorded the row, as given in Migration.Batch.
+	// Store it to let godwit roll back a whole run at once; 0 means unknown.
+	Batch int64
 }
 
 // Migration is one migration to apply or revert.
@@ -84,6 +87,9 @@ type Migration struct {
 	// Statements are the SQL statements for this driver, already selected and
 	// in order. For Apply they are the Up statements, for Revert the Down ones.
 	Statements []string
+	// Batch numbers the apply run. For Apply, store it in the row's batch
+	// column; it is 0 for Revert.
+	Batch int64
 }
 
 // Driver is the plugin's entry point: it describes the database engine, parses
@@ -112,6 +118,7 @@ type Driver interface {
 //	applied_at   timestamp, default now
 //	duration_ms  integer
 //	dirty        boolean
+//	batch        integer, default 0 (optional; see Migration.Batch)
 type Connection interface {
 	// Close releases the connection.
 	Close() error

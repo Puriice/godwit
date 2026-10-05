@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/puriice/godwit/internal/app"
 	"github.com/puriice/godwit/internal/domain"
 )
 
@@ -44,7 +45,7 @@ func (m *Model) header(title string) string {
 const (
 	helpSep        = " · "
 	targetsHelp    = "←/→ switch panel · ↑/↓ select · ↵ open · a add · e edit · x delete · t enable/disable · u apply all targets · r refresh · q quit"
-	migrationsHelp = "↑/↓ select · ↵ migrate to selected · ␣ run only selected · N apply all · n apply next · b roll back · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
+	migrationsHelp = "↑/↓ select · ↵ migrate to selected · ␣ run only selected · N apply all · n apply next · b roll back · B roll back batch · c clear dirty · e enable/disable migration · t enable/disable target · r refresh · q back"
 )
 
 // wrapHelp lays out a " · "-separated shortcut list in lines no wider than
@@ -298,7 +299,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := m.state(t.Name)
 	if t.Disabled {
 		switch key.String() {
-		case "N", "n", "b", "enter", " ", "c", "r":
+		case "N", "n", "b", "enter", " ", "B", "c", "r":
 			m.notice = t.Name + " is disabled; press t to enable it"
 			return m, nil
 		}
@@ -340,6 +341,8 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
 			return m.run(t, domain.Down, 1)
 		})
+	case "B":
+		return m, m.confirmRollbackBatch(t, st)
 	case "enter":
 		return m, m.goTo(t, st)
 	case " ":
@@ -357,6 +360,28 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.refresh(t)
 	}
 	return m, nil
+}
+
+// confirmRollbackBatch asks before rolling back every migration applied in the
+// same run as the most recently applied one.
+func (m *Model) confirmRollbackBatch(t domain.Target, st *targetState) tea.Cmd {
+	batch := app.LatestBatch(st.items)
+	if len(batch) == 0 {
+		m.notice = "nothing to roll back"
+		return nil
+	}
+	for _, it := range batch {
+		if reason := blocked(it, "rolled back"); reason != "" {
+			m.notice = reason
+			return nil
+		}
+	}
+	names := make([]string, len(batch))
+	for i, it := range batch {
+		names[i] = fmt.Sprintf("%d_%s", it.Version, it.Name)
+	}
+	q := fmt.Sprintf("Roll back the latest batch on %s (%d migration(s), newest first)?\n%s", t.Name, len(batch), strings.Join(names, "\n"))
+	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.downBatch(t) })
 }
 
 // confirmRedo checks the selected migration can be redone and asks first: it

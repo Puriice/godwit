@@ -2,6 +2,7 @@ package sqldb_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -51,5 +52,47 @@ func TestSQLiteApplyRevert(t *testing.T) {
 	}
 	if rs, _ := db.Applied(ctx); len(rs) != 0 {
 		t.Fatalf("after revert: %+v", rs)
+	}
+}
+
+func TestSQLiteBatchColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// A state table from before batches existed gets the column added.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`CREATE TABLE ` + sqldb.Table + ` (version INTEGER NOT NULL PRIMARY KEY, name TEXT NOT NULL,
+		checksum TEXT NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		duration_ms INTEGER NOT NULL DEFAULT 0, dirty BOOLEAN NOT NULL DEFAULT FALSE)`)
+	if err == nil {
+		_, err = raw.Exec(`INSERT INTO ` + sqldb.Table + ` (version, name, checksum) VALUES (1, 'old', 'c')`)
+	}
+	raw.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tg := domain.Target{Name: "lite", Driver: "sqlite", Database: path}
+	db, err := sqldb.NewFactory().Open(ctx, tg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for range 2 { // idempotent
+		if err := db.EnsureTable(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := &domain.Migration{Version: 2, Name: "new", Checksum: "n", Batch: 7,
+		Up: []domain.Statement{{Driver: domain.DriverAll, SQL: "CREATE TABLE t (id INTEGER)"}}}
+	if err := db.Apply(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := db.Applied(ctx)
+	if err != nil || len(rs) != 2 || rs[0].Batch != 0 || rs[1].Batch != 7 {
+		t.Fatalf("Applied = %+v, %v", rs, err)
 	}
 }

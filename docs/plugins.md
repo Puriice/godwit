@@ -191,6 +191,7 @@ missing. Use these columns (types adapted to your database):
 | `applied_at` | timestamp, default now |
 | `duration_ms` | integer |
 | `dirty` | boolean |
+| `batch` | integer, default 0 (optional) |
 
 **`lock` / `unlock`** take and release a database-wide lock so two godwit runs
 cannot migrate the same database at once. `lock` should fail rather than wait
@@ -200,7 +201,7 @@ forever. If your database has no locking, serialize however you can, or make
 **`applied`** returns every row of the state table, ordered by version:
 
 ```json
-{ "records": [{ "version": 5, "name": "init", "checksum": "...", "appliedAt": "2026-01-02T03:04:05Z", "durationMs": 12, "dirty": false }] }
+{ "records": [{ "version": 5, "name": "init", "checksum": "...", "appliedAt": "2026-01-02T03:04:05Z", "durationMs": 12, "dirty": false, "batch": 1 }] }
 ```
 
 **`apply` / `revert`** carry the migration. `statements` is already filtered to
@@ -208,10 +209,13 @@ the statements that apply to your driver, in order, so you never parse godwit's
 files:
 
 ```json
-{ "migration": { "version": 5, "name": "init", "checksum": "...", "noTransaction": false, "statements": ["CREATE TABLE ..."] } }
+{ "migration": { "version": 5, "name": "init", "checksum": "...", "noTransaction": false, "statements": ["CREATE TABLE ..."], "batch": 3 } }
 ```
 
-- `apply` runs the statements, then inserts the row into the state table.
+- `apply` runs the statements, then inserts the row into the state table. Store
+  `batch` in the row's `batch` column and return it from `applied`; godwit uses
+  it to roll back a whole run at once. It is optional: without it, "roll back
+  batch" falls back to one migration at a time.
 - `revert` runs the statements, then deletes the row.
 - If your database can roll back DDL and `noTransaction` is false, do all of it
   in one transaction.

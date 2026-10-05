@@ -78,6 +78,7 @@ type params struct {
 		Checksum      string   `json:"checksum"`
 		NoTransaction bool     `json:"noTransaction"`
 		Statements    []string `json:"statements"`
+		Batch         int64    `json:"batch"`
 	} `json:"migration"`
 }
 
@@ -98,6 +99,7 @@ type wireRecord struct {
 	AppliedAt  time.Time `json:"appliedAt"`
 	DurationMS int64     `json:"durationMs"`
 	Dirty      bool      `json:"dirty"`
+	Batch      int64     `json:"batch,omitempty"`
 }
 
 func (s *server) handleLine(line []byte) error {
@@ -204,6 +206,7 @@ func (s *server) dispatch(req request) (any, error) {
 		m := Migration{
 			Version: p.Migration.Version, Name: p.Migration.Name, Checksum: p.Migration.Checksum,
 			NoTransaction: p.Migration.NoTransaction, Statements: p.Migration.Statements,
+			Batch: p.Migration.Batch,
 		}
 		if req.Method == "apply" {
 			return struct{}{}, s.conn.Apply(ctx, m)

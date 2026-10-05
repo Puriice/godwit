@@ -51,7 +51,7 @@ func (f *fakeDB) Apply(_ context.Context, m *domain.Migration) error {
 		f.recs[m.Version] = &domain.Record{Version: m.Version, Name: m.Name, Checksum: m.Checksum, Dirty: true}
 		return errors.New("boom")
 	}
-	f.recs[m.Version] = &domain.Record{Version: m.Version, Name: m.Name, Checksum: m.Checksum, AppliedAt: time.Now()}
+	f.recs[m.Version] = &domain.Record{Version: m.Version, Name: m.Name, Checksum: m.Checksum, AppliedAt: time.Now(), Batch: m.Batch}
 	return nil
 }
 func (f *fakeDB) Revert(_ context.Context, m *domain.Migration) error {
@@ -258,6 +258,45 @@ func TestDownRevertsLatestApplied(t *testing.T) {
 	}
 	if len(h.db.reverted) != 1 || h.db.reverted[0] != 2 {
 		t.Errorf("reverted = %v, want [2]", h.db.reverted)
+	}
+}
+
+func TestDownBatch(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"), mig(4, "d"), mig(5, "e"))
+	h.svc.Up(ctx, "t", 1, nil) // batch 1: 1
+	h.svc.Up(ctx, "t", 3, nil) // batch 2: 2, 3, 4
+	h.svc.Up(ctx, "t", 0, nil) // batch 3: 5
+	if h.db.recs[1].Batch != 1 || h.db.recs[3].Batch != 2 || h.db.recs[5].Batch != 3 {
+		t.Fatalf("batches = %d %d %d", h.db.recs[1].Batch, h.db.recs[3].Batch, h.db.recs[5].Batch)
+	}
+
+	// The latest batch holds only 5; then the next one rolls back 4, 3, 2 in reverse.
+	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 1 {
+		t.Fatalf("first: n=%d err=%v", n, err)
+	}
+	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 3 {
+		t.Fatalf("second: n=%d err=%v", n, err)
+	}
+	want := []int64{5, 4, 3, 2}
+	if len(h.db.reverted) != len(want) {
+		t.Fatalf("reverted = %v, want %v", h.db.reverted, want)
+	}
+	for i := range want {
+		if h.db.reverted[i] != want[i] {
+			t.Errorf("reverted = %v, want %v", h.db.reverted, want)
+		}
+	}
+	if len(h.db.recs) != 1 || h.db.recs[1] == nil {
+		t.Errorf("recs = %v", h.db.recs)
+	}
+
+	// A row without a batch (written before batches existed) stands alone.
+	h.db.recs[1].Batch = 0
+	h.svc.Up(ctx, "t", 1, nil)
+	h.db.recs[2].Batch = 0
+	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 1 {
+		t.Errorf("legacy: n=%d err=%v", n, err)
 	}
 }
 

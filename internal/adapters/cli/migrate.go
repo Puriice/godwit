@@ -17,7 +17,7 @@ import (
 // MigrateUsage documents the migrate subcommands.
 const MigrateUsage = `usage: godwit migrate status [target...]
        godwit migrate up [-n N | --to VERSION] [target...]
-       godwit migrate down [-n N | --to VERSION] [target...]
+       godwit migrate down [-n N | --to VERSION | --batch] [target...]
        godwit migrate redo <version> [target...]
        godwit migrate clear-dirty <version> <target>
        godwit migrate new <name>
@@ -29,6 +29,8 @@ const MigrateUsage = `usage: godwit migrate status [target...]
   down         roll back the newest applied migration (default -n 1)
                  -n N         roll back N
                  --to VERSION roll back everything newer than VERSION
+                 --batch      roll back the latest batch: every migration applied
+                              in the same run as the newest applied one
   redo         roll back one applied migration and apply it again
   clear-dirty  clear the dirty flag after repairing a failed migration by hand
   new          create migrations/<timestamp>_<name>.sql from the template
@@ -146,9 +148,13 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, args []string, out io.Writer) error {
 	var n int
 	var to string
+	var batch bool
 	rest, err := parseFlags(string(dir), args, func(fs *flag.FlagSet) {
 		fs.IntVar(&n, "n", 0, "")
 		fs.StringVar(&to, "to", "", "")
+		if dir == domain.Down {
+			fs.BoolVar(&batch, "batch", false, "")
+		}
 	})
 	if err != nil {
 		return err
@@ -158,6 +164,9 @@ func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, ar
 	}
 	if n > 0 && to != "" {
 		return errors.New("use either -n or --to, not both")
+	}
+	if batch && (n > 0 || to != "") {
+		return errors.New("--batch cannot be combined with -n or --to")
 	}
 	var version int64
 	if to != "" {
@@ -178,6 +187,8 @@ func migrateMove(ctx context.Context, svc *app.Service, dir domain.Direction, ar
 			done, err = svc.UpTo(ctx, name, version, prog)
 		case dir == domain.Up:
 			done, err = svc.Up(ctx, name, n, prog)
+		case batch:
+			done, err = svc.DownBatch(ctx, name, prog)
 		case version != 0:
 			done, err = svc.DownTo(ctx, name, version, prog)
 		default:

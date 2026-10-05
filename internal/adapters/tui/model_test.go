@@ -466,3 +466,33 @@ func TestMigrateAllToSelectedFile(t *testing.T) {
 		t.Errorf("confirmation should name the rollback:\n%s", v)
 	}
 }
+
+func TestRollbackBatchAsksFirst(t *testing.T) {
+	m := testModel(t)
+	st := m.state("a")
+	st.loaded = true
+	mk := func(v int64, batch int64, at int) domain.Item {
+		return domain.Item{Version: v, Name: "m", State: domain.Applied, Migration: &domain.Migration{Version: v},
+			Record: &domain.Record{Version: v, Batch: batch, AppliedAt: time.Unix(int64(at), 0)}}
+	}
+	st.items = []domain.Item{mk(1, 1, 10), mk(2, 2, 20), mk(3, 2, 20)}
+	m.screen = scrMigrations
+
+	m.Update(key("B"))
+	if m.screen != scrForm || m.formTitle != "Confirm" {
+		t.Fatalf("expected a confirm form, screen=%v title=%q", m.screen, m.formTitle)
+	}
+	if v := m.View(); !strings.Contains(v, "2 migration(s)") || !strings.Contains(v, "3_m") {
+		t.Errorf("confirm should list the latest batch:\n%s", v)
+	}
+	if st.running {
+		t.Error("nothing may run before the user confirms")
+	}
+	m.Update(key("esc"))
+
+	st.items = nil
+	m.Update(key("B"))
+	if m.screen != scrMigrations || !strings.Contains(m.notice, "nothing to roll back") {
+		t.Errorf("empty: screen=%v notice=%q", m.screen, m.notice)
+	}
+}
