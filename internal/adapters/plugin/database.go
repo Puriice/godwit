@@ -54,10 +54,16 @@ func (d *database) Applied(ctx context.Context) ([]domain.Record, error) {
 }
 
 func (d *database) Apply(ctx context.Context, m *domain.Migration) error {
+	if m.UpHasRepeat() {
+		return fmt.Errorf("migration %d_%s uses RepeatStart, which plugin drivers do not support", m.Version, m.Name)
+	}
 	return d.c.call(ctx, "apply", migrationParams{wire(m, m.UpSQL(d.driver))}, nil)
 }
 
 func (d *database) Revert(ctx context.Context, m *domain.Migration) error {
+	if m.DownHasRepeat() {
+		return fmt.Errorf("migration %d_%s uses RepeatStart, which plugin drivers do not support", m.Version, m.Name)
+	}
 	stmts := m.DownSQL(d.driver)
 	if len(stmts) == 0 {
 		return fmt.Errorf("migration %d_%s has no Down statements for %s", m.Version, m.Name, d.driver)

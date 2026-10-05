@@ -65,6 +65,28 @@ func (p Project) Target(name string) (Target, bool) {
 type Statement struct {
 	Driver string // lower-case driver name, or DriverAll
 	SQL    string
+	// Group is the id of the RepeatStart/RepeatEnd block the statement belongs
+	// to, or 0 for a statement that runs once. Ids are unique within a section.
+	Group int
+	// Condition marks the block's RepeatCondition query rather than a body
+	// statement. It is only set when Group is non-zero.
+	Condition bool
+	// Delay is the block's delay between passes (from RepeatStart), repeated on
+	// each of its statements; zero when there is none.
+	Delay time.Duration
+}
+
+// Step is what runs as one unit: a single statement, or a repeat block.
+type Step struct {
+	SQL []string // the statement, or the block's body in order
+	// Repeat marks a block, which runs again and again; see Condition.
+	Repeat bool
+	// Condition is the block's RepeatCondition query, or empty. With one, the
+	// block runs while the query's first value is truthy; without one, until an
+	// iteration affects no rows.
+	Condition string
+	// Delay is how long to wait between one pass and the next.
+	Delay time.Duration
 }
 
 // Migration is one versioned schema change.
@@ -87,6 +109,22 @@ func (m *Migration) UpSQL(driver string) []string { return statementsFor(m.Up, d
 // DownSQL returns the Down statements that apply to driver, in order.
 func (m *Migration) DownSQL(driver string) []string { return statementsFor(m.Down, driver) }
 
+// UpSteps returns the Up steps that apply to driver, in order.
+func (m *Migration) UpSteps(driver string) []Step { return stepsFor(m.Up, driver) }
+
+// DownSteps returns the Down steps that apply to driver, in order.
+func (m *Migration) DownSteps(driver string) []Step { return stepsFor(m.Down, driver) }
+
+// UpHasRepeat reports whether Up contains a repeat block.
+func (m *Migration) UpHasRepeat() bool { return hasRepeat(m.Up) }
+
+// DownHasRepeat reports whether Down contains a repeat block.
+func (m *Migration) DownHasRepeat() bool { return hasRepeat(m.Down) }
+
+func hasRepeat(stmts []Statement) bool {
+	return slices.ContainsFunc(stmts, func(s Statement) bool { return s.Group != 0 })
+}
+
 func statementsFor(stmts []Statement, driver string) []string {
 	driver = strings.ToLower(driver)
 	var out []string
@@ -96,6 +134,36 @@ func statementsFor(stmts []Statement, driver string) []string {
 		}
 	}
 	return out
+}
+
+// stepsFor groups the statements that apply to driver into steps. A repeat
+// block whose body has no statement for driver is dropped.
+func stepsFor(stmts []Statement, driver string) []Step {
+	driver = strings.ToLower(driver)
+	var out []Step
+	cur := -1 // index in out of the open block, while its statements go by
+	group := 0
+	for _, s := range stmts {
+		if s.Driver != DriverAll && s.Driver != driver {
+			continue
+		}
+		if s.Group == 0 {
+			out = append(out, Step{SQL: []string{s.SQL}})
+			group, cur = 0, -1
+			continue
+		}
+		if s.Group != group || cur < 0 {
+			out = append(out, Step{Repeat: true, Delay: s.Delay})
+			group, cur = s.Group, len(out)-1
+		}
+		if s.Condition {
+			out[cur].Condition = s.SQL
+		} else {
+			out[cur].SQL = append(out[cur].SQL, s.SQL)
+		}
+	}
+	// A block left with only a condition has no body to run.
+	return slices.DeleteFunc(out, func(st Step) bool { return st.Repeat && len(st.SQL) == 0 })
 }
 
 // Record is a migration as recorded in a target's godwit_migration table.

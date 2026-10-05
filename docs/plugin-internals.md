@@ -111,6 +111,9 @@ godwit keeps the migration *policy*; the plugin supplies the *mechanism*.
   `DownSQL`) and sends them in order. A plugin never reads migration files.
 - godwit refuses `revert` when there are no Down statements for the driver,
   before contacting the plugin.
+- godwit refuses `apply` and `revert` for a migration that uses
+  `RepeatStart`/`RepeatEnd` blocks, before contacting the plugin. Statements
+  reach a plugin as a flat list, which cannot express a loop.
 - The plugin decides how to run them: transaction or not, how to take the lock,
   and the column types of `godwit_migration`. The dirty-flag protocol is
   specified in [plugins.md](plugins.md) because godwit relies on it to detect

@@ -6,6 +6,7 @@ package sqldb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -170,11 +171,147 @@ func execAll(ctx context.Context, e execer, stmts []string) error {
 	return nil
 }
 
+// maxRepeat caps the iterations of one repeat block, so a body or condition
+// that never converges ends in an error instead of looping forever. A variable
+// so tests can lower it.
+var maxRepeat = 10_000_000
+
+// runner is what both *sql.DB and *sql.Tx offer.
+type runner interface {
+	execer
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// truthy reads the first value of a RepeatCondition query as a boolean: NULL,
+// false, 0 and the text "", "0", "false" and "f" are false; anything else is
+// true.
+func truthy(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	case []byte:
+		return truthy(string(v))
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "", "0", "false", "f":
+			return false
+		}
+	}
+	return true
+}
+
+// iterate runs one pass of a repeat step on r and reports whether another
+// should follow. With a condition it is checked first (a while loop); without
+// one the pass runs and the loop ends once it affects no rows.
+func iterate(ctx context.Context, r runner, st domain.Step) (more bool, err error) {
+	if st.Condition != "" {
+		var v any
+		switch err := r.QueryRowContext(ctx, st.Condition).Scan(&v); {
+		case errors.Is(err, sql.ErrNoRows):
+			return false, nil
+		case err != nil:
+			return false, fmt.Errorf("condition: %w", err)
+		}
+		if !truthy(v) {
+			return false, nil
+		}
+	}
+	var affected int64
+	for i, s := range st.SQL {
+		res, err := r.ExecContext(ctx, s)
+		if err != nil {
+			return false, fmt.Errorf("statement %d: %w", i+1, err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			affected += n
+		}
+	}
+	return st.Condition != "" || affected > 0, nil
+}
+
+// repeat runs a repeat step until it is done. Where DDL is transactional every
+// iteration is its own transaction, so locks stay short and finished
+// iterations survive a later failure.
+func (c *conn) repeat(ctx context.Context, st domain.Step) error {
+	for n := 1; ; n++ {
+		if n > maxRepeat {
+			return fmt.Errorf("stopped after %d iterations; the block never finished (check its WHERE clause or add a RepeatCondition)", maxRepeat)
+		}
+		more, err := c.pass(ctx, st)
+		if err != nil {
+			return fmt.Errorf("iteration %d: %w", n, err)
+		}
+		if !more {
+			return nil
+		}
+		if err := sleep(ctx, st.Delay); err != nil {
+			return fmt.Errorf("iteration %d: %w", n, err)
+		}
+	}
+}
+
+// sleep waits for d between two passes, which run in separate transactions, so
+// nothing is held open meanwhile. It returns early if ctx is cancelled.
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func (c *conn) pass(ctx context.Context, st domain.Step) (bool, error) {
+	if !c.d.transactional {
+		return iterate(ctx, c.db, st)
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	more, err := iterate(ctx, tx, st)
+	if err != nil {
+		return false, err
+	}
+	return more, tx.Commit()
+}
+
+// runSteps runs steps outside any migration-wide transaction: plain statements
+// as they come, repeat blocks one transaction per iteration.
+func (c *conn) runSteps(ctx context.Context, steps []domain.Step) error {
+	blocks := 0
+	for i, st := range steps {
+		if !st.Repeat {
+			if _, err := c.db.ExecContext(ctx, st.SQL[0]); err != nil {
+				return fmt.Errorf("statement %d: %w", i+1, err)
+			}
+			continue
+		}
+		blocks++
+		if err := c.repeat(ctx, st); err != nil {
+			return fmt.Errorf("repeat block %d (statement %d): %w", blocks, i+1, err)
+		}
+	}
+	return nil
+}
+
 func (c *conn) Apply(ctx context.Context, m *domain.Migration) error {
 	stmts := m.UpSQL(c.d.name)
 	start := time.Now()
 
-	if c.d.transactional && !m.NoTransaction {
+	if c.d.transactional && !m.NoTransaction && !m.UpHasRepeat() {
 		tx, err := c.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -194,7 +331,7 @@ func (c *conn) Apply(ctx context.Context, m *domain.Migration) error {
 	if err := c.insert(ctx, c.db, m, true, 0); err != nil {
 		return err
 	}
-	if err := execAll(ctx, c.db, stmts); err != nil {
+	if err := c.runSteps(ctx, m.UpSteps(c.d.name)); err != nil {
 		return err // row stays dirty
 	}
 	_, err := c.db.ExecContext(ctx,
@@ -210,7 +347,7 @@ func (c *conn) Revert(ctx context.Context, m *domain.Migration) error {
 		return fmt.Errorf("migration %d_%s has no Down statements for %s", m.Version, m.Name, c.d.name)
 	}
 
-	if c.d.transactional && !m.NoTransaction {
+	if c.d.transactional && !m.NoTransaction && !m.DownHasRepeat() {
 		tx, err := c.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -228,7 +365,7 @@ func (c *conn) Revert(ctx context.Context, m *domain.Migration) error {
 	if err := c.setDirty(ctx, c.db, m.Version, true); err != nil {
 		return err
 	}
-	if err := execAll(ctx, c.db, stmts); err != nil {
+	if err := c.runSteps(ctx, m.DownSteps(c.d.name)); err != nil {
 		return err
 	}
 	return c.remove(ctx, c.db, m.Version)
