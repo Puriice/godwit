@@ -20,7 +20,7 @@ type procRunner struct {
 }
 
 func (p *procRunner) Poll(string, int64) (app.RunStatus, error) { return p.status, nil }
-func (p *procRunner) Stop(t string) error                        { p.stopped = append(p.stopped, t); return nil }
+func (p *procRunner) Stop(t string) error                       { p.stopped = append(p.stopped, t); return nil }
 func (p *procRunner) Dequeue(_ string, i int, _ domain.Job) error {
 	p.dequeued = append(p.dequeued, i)
 	return nil
