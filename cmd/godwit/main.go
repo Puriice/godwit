@@ -50,6 +50,13 @@ Migrations:
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file
 
+Background runs:
+  process list [target...]                 show background runs and their queues
+  process show <target> [-n LINES]         details, queue and log tail of a run
+  process cancel <target>                  cancel the run in progress
+  process dequeue <target> <position>      remove one queued job
+  process clear-queue <target>             remove every queued job of a target
+
 Help:
   help, -h, --help                         show this message
 `
@@ -61,7 +68,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate", "plugin", detach.WorkerCommand, detach.LaunchCommand:
+	case "", "init", "auth", "migrate", "process", "plugin", detach.WorkerCommand, detach.LaunchCommand:
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -135,6 +142,12 @@ func main() {
 			bg = runner
 		}
 		err = cli.MigrateWith(context.Background(), svc, bg, args[1:], os.Stdout)
+	case "process":
+		var bg app.BackgroundRunner
+		if runner, rerr := detach.New(root); rerr == nil {
+			bg = runner
+		}
+		err = cli.Process(svc, bg, args[1:], os.Stdout)
 	case detach.LaunchCommand:
 		var runner *detach.Runner
 		if runner, err = detach.New(root); err == nil {

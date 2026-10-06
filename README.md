@@ -172,6 +172,11 @@ Migrations:
                                            --detach = run in the background and return
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file
+  process list [target...]                 background runs and their queues
+  process show <target> [-n LINES]         a run's details, queue and log tail
+  process cancel <target>                  cancel the run in progress
+  process dequeue <target> <position>      remove one queued job
+  process clear-queue <target>             remove every queued job of a target
 ```
 
 Without target names, `migrate` uses every enabled target. It tries all of them
