@@ -26,7 +26,7 @@ func TestPluginListSections(t *testing.T) {
 
 	var out bytes.Buffer
 	var installed []string
-	if err := Plugin(context.Background(), svc, ops(&installed), []string{"list"}, &out); err != nil {
+	if err := Plugin(context.Background(), svc, ops(&installed), []string{"list", "-G"}, &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -55,7 +55,7 @@ func TestPluginListEmptySections(t *testing.T) {
 	var installed []string
 	run := func() string {
 		out.Reset()
-		if err := Plugin(context.Background(), svc, ops(&installed), []string{"list"}, &out); err != nil {
+		if err := Plugin(context.Background(), svc, ops(&installed), []string{"list", "-G"}, &out); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
@@ -121,7 +121,7 @@ func TestPluginListStylesOverriddenRows(t *testing.T) {
 
 	var out bytes.Buffer
 	var installed []string
-	if err := Plugin(context.Background(), svc, ops(&installed), []string{"list"}, &out); err != nil {
+	if err := Plugin(context.Background(), svc, ops(&installed), []string{"list", "-G"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	ansi := regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -152,5 +152,34 @@ func TestPluginListStylesOverriddenRows(t *testing.T) {
 	}
 	if rows != 3 {
 		t.Errorf("expected 3 rows, got %d:\n%q", rows, out.String())
+	}
+}
+
+func TestPluginListScopeFlags(t *testing.T) {
+	svc, _ := newService(t)
+	withGlobal(t, svc)
+	if err := svc.AddPlugin(domain.PluginSpec{Name: "local", Command: "./tool"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddGlobalPlugin(domain.PluginSpec{Name: "duck", Command: "duck"}); err != nil {
+		t.Fatal(err)
+	}
+	list := func(flags ...string) string {
+		var out bytes.Buffer
+		var installed []string
+		if err := Plugin(context.Background(), svc, ops(&installed), append([]string{"list"}, flags...), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := list(); got != "Project plugins\n    local  ./tool\n" {
+		t.Errorf("no flag:\n%s", got)
+	}
+	want := "Global plugins (~/.godwit)\n    duck  duck\n"
+	if got := list("-g"); got != want {
+		t.Errorf("-g:\n%s", got)
+	}
+	if got := list("-G"); !strings.Contains(got, "Project plugins") || !strings.Contains(got, "Global plugins") {
+		t.Errorf("-G:\n%s", got)
 	}
 }

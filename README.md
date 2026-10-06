@@ -161,7 +161,7 @@ Targets:
 Plugins:
   plugin install <url> [name]              build a driver plugin from a Go package and add it
   plugin add <command> [name]              add a driver plugin you already have
-  plugin list                              list plugins
+  plugin list [-g|-G]                      list plugins (this project; -g = global, -G = both)
   plugin remove <name>                     remove a plugin
 
 Migrations:

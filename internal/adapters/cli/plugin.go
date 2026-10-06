@@ -32,7 +32,7 @@ type PluginOps struct {
 }
 
 // PluginUsage documents the plugin subcommands.
-const PluginUsage = `usage: godwit plugin list
+const PluginUsage = `usage: godwit plugin list [-g | -G]
        godwit plugin add [-g | -G] <command> [name] [-- args...]
        godwit plugin install [-g | -G] <url> [name] [-- args...]
        godwit plugin remove [-g | -G] <name>
@@ -45,7 +45,7 @@ const PluginUsage = `usage: godwit plugin list
            (@version optional, default @latest). Needs the Go toolchain.
            Running it again updates the plugin.
   remove   unregister a plugin (targets using its driver are left alone)
-  list     show registered plugins, project and global
+  list     show registered plugins (default: this project; -g: global; -G: both)
 
   -g       use the global location, ~/.godwit, for every project of yours
            (plugins go in ~/.godwit/plugins and config in ~/.godwit/config.json)
@@ -100,8 +100,8 @@ func Plugin(ctx context.Context, svc *app.Service, ops PluginOps, args []string,
 	one := len(pos) == 1 || len(pos) == 2
 	switch args[0] {
 	case "list":
-		if len(pos) == 0 && len(extra) == 0 && sc == scopeProject {
-			return pluginList(svc, out)
+		if len(pos) == 0 && len(extra) == 0 {
+			return pluginList(svc, sc, out)
 		}
 	case "add":
 		if one {
@@ -170,25 +170,37 @@ const (
 	overriddenNote = "overridden by project"
 )
 
-// pluginList prints the project's plugins, then the user's global ones. A global
-// plugin that a project plugin of the same name replaces is marked as such.
-func pluginList(svc *app.Service, out io.Writer) error {
+// pluginList prints the project's plugins; -g prints the user's global ones
+// instead and -G both, project first. A global plugin that a project plugin of
+// the same name replaces is marked as such.
+func pluginList(svc *app.Service, sc scope, out io.Writer) error {
 	local, global := svc.Plugins(), svc.GlobalPlugins()
-	if len(local)+len(global) == 0 {
+	n := 0
+	if sc.project() {
+		n += len(local)
+	}
+	if sc.global() {
+		n += len(global)
+	}
+	if n == 0 {
 		fmt.Fprintln(out, "No plugins. Add one with: godwit plugin add <command>  or  godwit plugin install <url>")
 		return nil
 	}
 
-	fmt.Fprintln(out, "Project plugins")
-	if err := printPluginRows(out, local, func(domain.PluginSpec) bool { return false }); err != nil {
-		return err
+	if sc.project() {
+		fmt.Fprintln(out, "Project plugins")
+		if err := printPluginRows(out, local, func(domain.PluginSpec) bool { return false }); err != nil {
+			return err
+		}
 	}
-	if !svc.HasGlobal() {
-		return nil
+	if sc.global() {
+		if sc.project() {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintln(out, "Global plugins (~/.godwit)")
+		return printPluginRows(out, global, func(p domain.PluginSpec) bool { return hasPlugin(local, p.Name) })
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Global plugins (~/.godwit)")
-	return printPluginRows(out, global, func(p domain.PluginSpec) bool { return hasPlugin(local, p.Name) })
+	return nil
 }
 
 // printPluginRows writes one aligned row per plugin. Rows for which overridden

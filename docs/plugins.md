@@ -66,7 +66,7 @@ entry replaces a global one with the same name, which lets one repository pin a
 different build. `plugin remove` takes the same flags (`-G` removes it from
 wherever it is).
 
-`plugin list` groups plugins by where they are registered. A global plugin that
+`plugin list` shows this project's plugins; `-g` shows the global ones instead and `-G` both, grouped by where they are registered. A global plugin that
 a project plugin replaces is marked with `✗` and `overridden by project`, and on
 a terminal it is also dimmed and struck through, so it is clear it has no effect
 in this project:

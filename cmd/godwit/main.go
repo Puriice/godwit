@@ -53,7 +53,7 @@ Background runs:
 Plugins:
   plugin install [-g|-G] <url> [name]      build a driver plugin from a Go package and add it
   plugin add [-g|-G] <command> [name]      add a driver plugin you already have (see docs/plugins.md)
-  plugin list                              list plugins (project and global)
+  plugin list [-g|-G]                      list plugins (this project; -g = global, -G = both)
   plugin remove [-g|-G] <name>             remove a plugin
                                            -g = global (~/.godwit), -G = global and this project
 

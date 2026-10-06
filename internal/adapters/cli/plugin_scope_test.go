@@ -80,7 +80,7 @@ func TestPluginGlobalScopes(t *testing.T) {
 	}
 
 	// list shows both, marking global entries a project entry replaces.
-	if err := do("list"); err != nil {
+	if err := do("list", "-G"); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Project plugins", "Global plugins (~/.godwit)", "duck", "overridden by project"} {
@@ -189,13 +189,13 @@ func TestPluginGlobalUnavailableAndBadFlags(t *testing.T) {
 	var installed []string
 	o := ops(&installed)
 	var out bytes.Buffer
-	for _, args := range [][]string{{"add", "-g", "duckdb"}, {"install", "-G", "github.com/me/x"}, {"remove", "-g", "x"}} {
+	for _, args := range [][]string{{"add", "-g", "duckdb"}, {"install", "-G", "github.com/me/x"}, {"remove", "-g", "x"}, {"list", "-g"}} {
 		if err := Plugin(context.Background(), svc, o, args, &out); err == nil || !strings.Contains(err.Error(), "home directory") {
 			t.Errorf("%v: err = %v", args, err)
 		}
 	}
 	withGlobal(t, svc)
-	for _, args := range [][]string{{"add", "-g", "-G", "duckdb"}, {"add", "--force", "duckdb"}, {"add", "-x", "duckdb"}, {"list", "-g"}} {
+	for _, args := range [][]string{{"add", "-g", "-G", "duckdb"}, {"add", "--force", "duckdb"}, {"add", "-x", "duckdb"}, {"list", "-g", "-G"}} {
 		if err := Plugin(context.Background(), svc, o, args, &out); err == nil || !strings.Contains(err.Error(), "usage: godwit plugin") {
 			t.Errorf("%v: err = %v", args, err)
 		}
