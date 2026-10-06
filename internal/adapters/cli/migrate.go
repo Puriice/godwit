@@ -16,9 +16,9 @@ import (
 
 // MigrateUsage documents the migrate subcommands.
 const MigrateUsage = `usage: godwit migrate status [target...]
-       godwit migrate up [--detach] [-n N | --to VERSION] [target...]
-       godwit migrate down [--detach] [-n N | --to VERSION | --batch] [target...]
-       godwit migrate redo [--detach] <version> [target...]
+       godwit migrate up [-d | --detach] [-n N | --to VERSION] [target...]
+       godwit migrate down [-d | --detach] [-n N | --to VERSION | --batch] [target...]
+       godwit migrate redo [-d | --detach] <version> [target...]
        godwit migrate clear-dirty <version> <target>
        godwit migrate new <name>
 
@@ -35,7 +35,7 @@ const MigrateUsage = `usage: godwit migrate status [target...]
   clear-dirty  clear the dirty flag after repairing a failed migration by hand
   new          create migrations/<timestamp>_<name>.sql from the template
 
---detach (up, down and redo; put it before the version or target names) starts
+-d or --detach (up, down and redo; put it before the version or target names) starts
 the run in a background process and returns at once. The run keeps going after
 this command, or the terminal, exits. Follow it in the log file the command
 prints, with "godwit migrate status", or in the TUI. A run that is still
@@ -187,6 +187,7 @@ func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 		fs.IntVar(&n, "n", 0, "")
 		fs.StringVar(&to, "to", "", "")
 		fs.BoolVar(&detach, "detach", false, "")
+		fs.BoolVar(&detach, "d", false, "")
 		if dir == domain.Down {
 			fs.BoolVar(&batch, "batch", false, "")
 		}
@@ -259,6 +260,7 @@ func migrateRedo(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 	var detach bool
 	args, err := parseFlags("redo", args, func(fs *flag.FlagSet) {
 		fs.BoolVar(&detach, "detach", false, "")
+		fs.BoolVar(&detach, "d", false, "")
 	})
 	if err != nil {
 		return err

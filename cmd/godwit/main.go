@@ -34,19 +34,12 @@ Targets:
   auth disable <name>                      temporarily skip a target
   auth enable <name>                       use a disabled target again
 
-Plugins:
-  plugin install [-g|-G] <url> [name]      build a driver plugin from a Go package and add it
-  plugin add [-g|-G] <command> [name]      add a driver plugin you already have (see docs/plugins.md)
-  plugin list                              list plugins (project and global)
-  plugin remove [-g|-G] <name>             remove a plugin
-                                           -g = global (~/.godwit), -G = global and this project
-
 Migrations:
   migrate status [target...]               show migration states
-  migrate up [--detach] [-n N | --to V] [target...]   apply pending migrations
-  migrate down [--detach] [-n N | --to V | --batch] [target...] roll back migrations
-  migrate redo [--detach] <version> [target...]       roll back and re-apply one migration
-                                           --detach = run in the background and return
+  migrate up [-d | --detach] [-n N | --to V] [target...]   apply pending migrations
+  migrate down [-d | --detach] [-n N | --to V | --batch] [target...] roll back migrations
+  migrate redo [-d | --detach] <version> [target...]       roll back and re-apply one migration
+                                           -d, --detach = run in the background and return
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file
 
@@ -56,6 +49,13 @@ Background runs:
   process cancel <target>                  cancel the run in progress
   process dequeue <target> <position>      remove one queued job
   process clear-queue <target>             remove every queued job of a target
+
+Plugins:
+  plugin install [-g|-G] <url> [name]      build a driver plugin from a Go package and add it
+  plugin add [-g|-G] <command> [name]      add a driver plugin you already have (see docs/plugins.md)
+  plugin list                              list plugins (project and global)
+  plugin remove [-g|-G] <name>             remove a plugin
+                                           -g = global (~/.godwit), -G = global and this project
 
 Help:
   help, -h, --help                         show this message

@@ -43,6 +43,8 @@ func TestDetachStartsJobs(t *testing.T) {
 		want domain.Job
 	}{
 		{[]string{"up", "--detach"}, domain.Job{Op: domain.OpUp}},
+		{[]string{"up", "-d"}, domain.Job{Op: domain.OpUp}},
+		{[]string{"redo", "-d", "7"}, domain.Job{Op: domain.OpRedo, Version: 7}},
 		{[]string{"up", "--detach", "-n", "2"}, domain.Job{Op: domain.OpUp, N: 2}},
 		{[]string{"up", "--detach", "--to", "5"}, domain.Job{Op: domain.OpUpTo, Version: 5}},
 		{[]string{"down", "--detach"}, domain.Job{Op: domain.OpDown}},
