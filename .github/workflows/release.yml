@@ -57,12 +57,13 @@ jobs:
             ext=""; [ "$os" = windows ] && ext=".exe"
             name="godwit_${GITHUB_REF_NAME}_${os}_${arch}"
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "dist/godwit$ext" ./cmd/godwit
+            cp LICENSE dist/LICENSE
             if [ "$os" = windows ]; then
-              (cd dist && zip "$name.zip" godwit.exe)
+              (cd dist && zip "$name.zip" godwit.exe LICENSE)
             else
-              tar -C dist -czf "dist/$name.tar.gz" godwit
+              tar -C dist -czf "dist/$name.tar.gz" godwit LICENSE
             fi
-            rm "dist/godwit$ext"
+            rm "dist/godwit$ext" dist/LICENSE
           done
           (cd dist && sha256sum * > checksums.txt)
       - name: Publish
