@@ -3,6 +3,8 @@ title: Commands
 description: Every godwit command and flag.
 ---
 
+# Commands
+
 ```
 Interface:
   (none)                                   open the migration TUI

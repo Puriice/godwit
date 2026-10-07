@@ -3,6 +3,8 @@ title: Getting started
 description: Install godwit, add a database and apply your first migration.
 ---
 
+# Getting started
+
 ## Install
 
 ```sh

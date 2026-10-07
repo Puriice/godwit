@@ -3,6 +3,8 @@ title: Migration files
 description: The file format, directives and per-driver blocks.
 ---
 
+# Migration files
+
 Migrations live in `migrations/<version>_<name>.sql`, with sections and optional
 driver blocks:
 
@@ -32,7 +34,7 @@ DROP TABLE users;
 | `-- +godwit driver: <name>` | statements below run only on that driver (`postgres`, `mysql` or `sqlite`) until the next directive. No directive, or a blank name, means all drivers. Unknown names are rejected. |
 | `-- +godwit StatementBegin` / `StatementEnd` | keep a body containing `;` as one statement |
 | `-- +godwit NoTransaction` | do not wrap the migration in a transaction (PostgreSQL) |
-| `-- +godwit RepeatStart[: <time>]` / `RepeatEnd` | run the statements in between again and again, one transaction per pass; see [Batch processing](../batch-processing/) |
+| `-- +godwit RepeatStart[: <time>]` / `RepeatEnd` | run the statements in between again and again, one transaction per pass; see [Batch processing](./batch-processing) |
 | `-- +godwit RepeatCondition` | inside a repeat block, a query that decides whether to run another pass |
 
 Statements are split on `;` outside `StatementBegin`/`StatementEnd`. Aliases:

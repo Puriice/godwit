@@ -1,6 +1,6 @@
 name: Website
 
-# Builds the landing page and docs in web/ (Astro Starlight) and deploys them
+# Builds the landing page and docs in web/ (VitePress) and deploys them
 # to GitHub Pages. Pull requests only build, to catch broken docs early.
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
-          path: web/dist
+          path: web/.vitepress/dist
 
   deploy:
     if: github.event_name != 'pull_request'

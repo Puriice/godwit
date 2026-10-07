@@ -3,6 +3,8 @@ title: Driver plugins
 description: Teach godwit a database it does not support, by writing or installing a driver plugin.
 ---
 
+# Driver plugins
+
 A plugin teaches godwit a database it does not support. It is an ordinary
 executable. godwit starts it, writes **requests** to its stdin and reads
 **responses** from its stdout. It works the same on Windows, macOS and Linux.

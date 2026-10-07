@@ -85,7 +85,7 @@ The code follows a ports-and-adapters layout: `internal/domain` (no I/O),
 `internal/app` (use cases and ports), and adapters for the file store, migration
 files, SQL databases, TUI and CLI. `internal/architecture_test.go` enforces the
 dependency direction. CI runs on GitHub Actions; pushing a `v*` tag publishes
-release binaries. The website in `web/` is built with Astro Starlight
+release binaries. The website in `web/` is built with VitePress
 (`cd web && pnpm install && pnpm dev`).
 
 ## Not yet supported

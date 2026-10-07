@@ -3,6 +3,8 @@ title: How migrations run
 description: State, locking and failure behaviour per database.
 ---
 
+# How migrations run
+
 - **State:** each applied migration is recorded with its version, a SHA-256
   checksum and a dirty flag. Status is one of `pending`, `applied`, `modified`
   (file changed after it was applied), `dirty`, or `missing` (recorded, but the
