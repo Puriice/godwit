@@ -1,9 +1,14 @@
 name: Website
 
-# Deploys the landing page and docs in web/ to GitHub Pages.
+# Builds the landing page and docs in web/ (Astro Starlight) and deploys them
+# to GitHub Pages. Pull requests only build, to catch broken docs early.
 on:
   push:
     branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web.yml'
+  pull_request:
     paths:
       - 'web/**'
       - '.github/workflows/web.yml'
@@ -11,26 +16,46 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: web/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      # If the site needs a build step (Astro, VitePress, Hugo, ...), add
-      # setup and build steps here and point `path` below at the output dir.
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: web
       - id: deployment
         uses: actions/deploy-pages@v4
