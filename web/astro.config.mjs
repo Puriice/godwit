@@ -26,11 +26,7 @@ export default defineConfig({
 					items: [
 						{ slug: 'reference/commands' },
 						{ slug: 'reference/how-migrations-run' },
-						{
-							label: 'Driver plugins',
-							link: 'https://github.com/Puriice/godwit/blob/main/docs/plugins.md',
-							attrs: { target: '_blank' },
-						},
+						{ slug: 'reference/driver-plugins' },
 					],
 				},
 			],
