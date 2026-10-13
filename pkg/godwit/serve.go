@@ -68,10 +68,13 @@ type response struct {
 
 // params is the union of every method's parameters.
 type params struct {
-	ConnString string     `json:"connstring"`
-	Password   string     `json:"password"`
-	Target     wireTarget `json:"target"`
-	Version    int64      `json:"version"`
+	ConnString string       `json:"connstring"`
+	Password   string       `json:"password"`
+	Target     wireTarget   `json:"target"`
+	Version    int64        `json:"version"`
+	Tool       string       `json:"tool"`
+	Table      string       `json:"table"`
+	Records    []wireRecord `json:"records"`
 	Migration  struct {
 		Version       int64    `json:"version"`
 		Name          string   `json:"name"`
@@ -100,6 +103,12 @@ type wireRecord struct {
 	DurationMS int64     `json:"durationMs"`
 	Dirty      bool      `json:"dirty"`
 	Batch      int64     `json:"batch,omitempty"`
+}
+
+type wireForeignRow struct {
+	Version int64     `json:"version"`
+	Applied bool      `json:"applied"`
+	At      time.Time `json:"at"`
 }
 
 func (s *server) handleLine(line []byte) error {
@@ -139,11 +148,12 @@ func (s *server) dispatch(req request) (any, error) {
 	case "handshake":
 		i := s.d.Info()
 		return map[string]any{
-			"protocol": ProtocolVersion,
-			"driver":   strings.ToLower(i.Name),
-			"aliases":  i.Aliases,
-			"schemes":  i.Schemes,
-			"noHost":   i.NoHost,
+			"protocol":  ProtocolVersion,
+			"driver":    strings.ToLower(i.Name),
+			"aliases":   i.Aliases,
+			"schemes":   i.Schemes,
+			"noHost":    i.NoHost,
+			"translate": i.Translate,
 		}, nil
 
 	case "parse_connection":
@@ -214,6 +224,31 @@ func (s *server) dispatch(req request) (any, error) {
 		return struct{}{}, s.conn.Revert(ctx, m)
 	case "clear_dirty":
 		return struct{}{}, s.conn.ClearDirty(ctx, p.Version)
+	case "translate_read", "translate_import":
+		tr, ok := s.conn.(Translator)
+		if !ok {
+			return nil, fmt.Errorf("%s: this driver cannot import from other tools", req.Method)
+		}
+		if req.Method == "translate_read" {
+			rows, found, err := tr.ReadForeign(ctx, p.Tool, p.Table)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]wireForeignRow, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, wireForeignRow(r))
+			}
+			return map[string]any{"found": found, "rows": out}, nil
+		}
+		recs := make([]Record, 0, len(p.Records))
+		for _, r := range p.Records {
+			recs = append(recs, Record(r))
+		}
+		added, err := tr.ImportRecords(ctx, recs)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"added": added}, nil
 	}
 	return nil, fmt.Errorf("unknown method %q", req.Method)
 }

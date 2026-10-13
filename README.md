@@ -57,6 +57,7 @@ Full documentation is at **<https://puriice.github.io/godwit/>**:
 - [Getting started](https://puriice.github.io/godwit/guides/getting-started/): connection strings and project configuration
 - [Migration files](https://puriice.github.io/godwit/guides/migration-files/): directives and per-driver blocks
 - [Batch processing](https://puriice.github.io/godwit/guides/batch-processing/): backfill big tables in repeated passes
+- [Migrating from goose](https://puriice.github.io/godwit/guides/migrating-from-goose/): `godwit translate goose`
 - [Commands](https://puriice.github.io/godwit/reference/commands/): every command and flag
 - [How migrations run](https://puriice.github.io/godwit/reference/how-migrations-run/): state, locking and failure behaviour
 

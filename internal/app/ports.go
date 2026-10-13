@@ -39,6 +39,13 @@ type MigrationSource interface {
 	Resolve(dir string) string
 	// EnsureDir makes sure the migrations directory exists.
 	EnsureDir(dir string) error
+	// Raw lists the .sql and .go files in dir without parsing them, for tools
+	// that rewrite migrations written for another migration tool.
+	Raw(dir string) ([]domain.RawFile, error)
+	// Write replaces the contents of an existing file in dir.
+	Write(dir, name, content string) error
+	// Check parses content as a godwit migration and returns its checksum.
+	Check(content string) (checksum string, err error)
 }
 
 // DatabaseFactory opens connections to targets.
@@ -61,6 +68,19 @@ type Database interface {
 	Revert(ctx context.Context, m *domain.Migration) error
 	// ClearDirty removes a version's dirty flag after manual repair.
 	ClearDirty(ctx context.Context, version int64) error
+}
+
+// ForeignImporter is an optional Database capability: reading another
+// migration tool's version table and recording its applied versions in the
+// state table, for "godwit translate". Plugin drivers opt in through their
+// handshake.
+type ForeignImporter interface {
+	// ForeignApplied returns the rows of tool's version table (table names it),
+	// oldest first. found is false when the table does not exist.
+	ForeignApplied(ctx context.Context, tool, table string) (rows []domain.ForeignRow, found bool, err error)
+	// ImportRecords inserts records whose version has no row yet and returns
+	// how many it added. It keeps each record's AppliedAt.
+	ImportRecords(ctx context.Context, recs []domain.Record) (added int, err error)
 }
 
 // StateForcer is an optional Database capability: rewriting a migration's

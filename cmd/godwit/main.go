@@ -57,6 +57,11 @@ Plugins:
   plugin remove [-g|-G] <name>             remove a plugin
                                            -g = global (~/.godwit), -G = global and this project
 
+Translate:
+  translate goose [--dry-run] [--table NAME] [target...]
+                                           move a project from goose: add godwit directives next to
+                                           the goose ones and import the versions goose has applied
+
 Help:
   help, -h, --help                         show this message
 `
@@ -68,7 +73,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate", "process", "plugin", detach.WorkerCommand, detach.LaunchCommand:
+	case "", "init", "auth", "migrate", "process", "plugin", "translate", detach.WorkerCommand, detach.LaunchCommand:
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -136,6 +141,8 @@ func main() {
 				return plugin.Install(ctx, dir, pkg, stdout, stderr)
 			},
 		}, args[1:], os.Stdout)
+	case "translate":
+		err = cli.Translate(context.Background(), svc, args[1:], os.Stdout)
 	case "migrate":
 		var bg app.BackgroundRunner // stays nil if the executable can't be found; --detach then errors
 		if runner, rerr := detach.New(root); rerr == nil {

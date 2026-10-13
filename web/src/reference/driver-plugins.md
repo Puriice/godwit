@@ -161,6 +161,7 @@ stop the process; you may keep serving requests.
 | `applied` | none | `{"records": [...]}` |
 | `apply` / `revert` | `{"migration": {...}}` | none |
 | `clear_dirty` | `{"version": 5}` | none |
+| `translate_read` / `translate_import` | see below | optional, see below |
 | `close` | none | none |
 
 **`handshake`** runs when godwit starts and for `plugin add`. `protocol` must be
@@ -232,6 +233,23 @@ files:
 **`clear_dirty`** sets `dirty = false` for a version, after a manual repair.
 
 **`close`** is a courtesy before the process is stopped; release resources.
+
+**`translate_read` / `translate_import`** are optional. They let
+`godwit translate goose` move a project over from another migration tool. A
+plugin opts in by adding `"translate": ["goose"]` to its handshake reply (the
+protocol version stays `1`); godwit never sends these methods otherwise.
+
+- `translate_read` takes `{"tool": "goose", "table": "goose_db_version"}` and
+  returns `{"found": true, "rows": [{"version": 1, "applied": true, "at": "..."}]}`.
+  Return goose's rows oldest first (`ORDER BY id`) with `version_id`,
+  `is_applied` and `tstamp`; `found` is `false` when the table does not exist.
+  Only read from it.
+- `translate_import` takes `{"records": [...]}` (the same shape as `applied`
+  returns) and inserts the records whose version has no row yet in the state
+  table, keeping `appliedAt`. It returns `{"added": 2}` and runs no migration SQL.
+
+In the Go package, list the tools in `Info.Translate` and implement
+`godwit.Translator` (`ReadForeign`, `ImportRecords`) on your `Connection`.
 
 ## Testing a plugin by hand
 
