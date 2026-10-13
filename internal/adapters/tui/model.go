@@ -204,7 +204,7 @@ func (m *Model) reloadMigrations() {
 	m.migCount, m.migErr = len(files), err
 	if err == nil {
 		if broken := brokenCount(files); broken > 0 {
-			m.migErr = fmt.Errorf("%d migration file(s) have errors (see the files panel)", broken)
+			m.migErr = fmt.Errorf("%d migration file(s) have errors (see the migrations panel)", broken)
 		}
 	}
 }
