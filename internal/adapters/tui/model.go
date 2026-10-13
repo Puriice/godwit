@@ -200,8 +200,23 @@ func New(svc *app.Service) *Model {
 }
 
 func (m *Model) reloadMigrations() {
-	migs, err := m.svc.Migrations()
-	m.migCount, m.migErr = len(migs), err
+	files, err := m.svc.MigrationFiles()
+	m.migCount, m.migErr = len(files), err
+	if err == nil {
+		if broken := brokenCount(files); broken > 0 {
+			m.migErr = fmt.Errorf("%d migration file(s) have errors (see the files panel)", broken)
+		}
+	}
+}
+
+func brokenCount(files []domain.MigrationFile) int {
+	n := 0
+	for _, f := range files {
+		if f.Err != nil {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *Model) state(name string) *targetState {

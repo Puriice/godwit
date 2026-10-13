@@ -16,12 +16,12 @@ const filesHelp = "←/→ switch panel · ↑/↓ select · ↵ migrate all to 
 func (m *Model) viewFiles() string {
 	var b strings.Builder
 	b.WriteString(m.header(m.tabs()))
-	migs, err := m.svc.Migrations()
+	files, err := m.svc.MigrationFiles()
 	switch {
 	case err != nil:
 		b.WriteString(errStyle.Render(firstLine(err.Error())))
 		b.WriteRune('\n')
-	case len(migs) == 0:
+	case len(files) == 0:
 		b.WriteString(dimStyle.Render("No migration files. Press n to create one."))
 		b.WriteRune('\n')
 	}
@@ -31,18 +31,31 @@ func (m *Model) viewFiles() string {
 	if m.fcur >= room {
 		start = m.fcur - room + 1
 	}
-	end := min(start+room, len(migs))
+	end := min(start+room, len(files))
 	for i := start; i < end; i++ {
-		mg := migs[i]
+		f := files[i]
+		if f.Err != nil {
+			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), errStyle.Render(f.Name+"  ERROR"))
+			for line := range strings.SplitSeq(f.Err.Error(), "\n") {
+				b.WriteString(errStyle.Render("    " + line))
+				b.WriteRune('\n')
+			}
+			continue
+		}
+		mg := f.Migration
 		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.fcur), mg.Version, truncate(mg.Name, 24), dimStyle.Render(migSummary(mg)+m.disabledNote(mg.Version)))
 	}
-	if len(migs) > end {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(migs)-end)))
+	if len(files) > end {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(files)-end)))
 		b.WriteRune('\n')
 	}
-	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", len(migs), m.svc.MigrationsLocation())))
-	if m.fcur < len(migs) && migs[m.fcur].Source != "" {
-		b.WriteString(dimStyle.Render(migs[m.fcur].Source))
+	count := fmt.Sprintf("%d migration file(s)", len(files))
+	if n := brokenCount(files); n > 0 {
+		count += fmt.Sprintf(" (%d with errors)", n)
+	}
+	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%s in %s", count, m.svc.MigrationsLocation())))
+	if m.fcur < len(files) && files[m.fcur].Migration != nil && files[m.fcur].Migration.Source != "" {
+		b.WriteString(dimStyle.Render(files[m.fcur].Migration.Source))
 		b.WriteRune('\n')
 	}
 	return b.String() + m.footer(filesHelp)
@@ -80,7 +93,22 @@ func migSummary(mg *domain.Migration) string {
 }
 
 func (m *Model) updateFiles(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	migs, _ := m.svc.Migrations()
+	files, _ := m.svc.MigrationFiles()
+	// brokenRow reports (and explains) that the selected file cannot be acted on.
+	brokenRow := func() bool {
+		if m.fcur < len(files) && files[m.fcur].Err != nil {
+			m.notice = "fix " + files[m.fcur].Name + " first"
+			return true
+		}
+		return false
+	}
+	var migs []*domain.Migration
+	if m.fcur < len(files) {
+		migs = make([]*domain.Migration, len(files))
+		for i, f := range files {
+			migs[i] = f.Migration
+		}
+	}
 	switch key.String() {
 	case "q":
 		return m, tea.Quit
@@ -93,14 +121,20 @@ func (m *Model) updateFiles(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fcur--
 		}
 	case "down", "j":
-		if m.fcur < len(migs)-1 {
+		if m.fcur < len(files)-1 {
 			m.fcur++
 		}
 	case "enter":
+		if brokenRow() {
+			break
+		}
 		if m.fcur < len(migs) {
 			return m, m.goToAll(migs[m.fcur])
 		}
 	case "e":
+		if brokenRow() {
+			break
+		}
 		if m.fcur < len(migs) {
 			mg := migs[m.fcur]
 			enable := m.svc.MigrationDisabledByDefault(mg.Version)

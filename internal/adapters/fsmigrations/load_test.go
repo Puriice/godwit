@@ -77,3 +77,42 @@ func TestLoadRejectsUnknownDriverNamingTheFile(t *testing.T) {
 		}
 	}
 }
+
+func TestScanReportsEveryFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "migs")
+	os.MkdirAll(dir, 0o755)
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("0001_bad.sql", "-- +godwit Up\n-- +godwit driver: postgress\nSELECT 1;\n")
+	write("0002_ok.sql", "-- +godwit Up\nSELECT 2;\n")
+	write("0002_dup.sql", "-- +godwit Up\nSELECT 3;\n")
+
+	s := New(root, []string{"mysql", "postgres"})
+	files, err := s.Scan("migs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("Scan returned %d files, want 3: %+v", len(files), files)
+	}
+	if files[0].Name != "0001_bad.sql" || files[0].Err == nil || files[0].Migration != nil {
+		t.Errorf("first file should be the broken one: %+v", files[0])
+	}
+	if !strings.Contains(files[0].Err.Error(), "line 2") {
+		t.Errorf("error %q should name the line", files[0].Err)
+	}
+	// Files sort by version, then name: the duplicate comes first and wins the version.
+	if files[1].Name != "0002_dup.sql" || files[1].Err != nil {
+		t.Errorf("second file = %+v", files[1])
+	}
+	if files[2].Name != "0002_ok.sql" || files[2].Err == nil || !strings.Contains(files[2].Err.Error(), "duplicate version") {
+		t.Errorf("third file should be flagged as a duplicate: %+v", files[2])
+	}
+	if _, err := s.Load("migs"); err == nil || !strings.Contains(err.Error(), "0001_bad.sql") {
+		t.Errorf("Load should still fail naming the first bad file, got %v", err)
+	}
+}

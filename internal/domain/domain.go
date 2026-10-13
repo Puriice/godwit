@@ -103,6 +103,14 @@ type Migration struct {
 	Batch int64
 }
 
+// MigrationFile is one migration file found on disk. Migration is nil and Err
+// set when the file could not be read or parsed.
+type MigrationFile struct {
+	Name      string // file name
+	Migration *Migration
+	Err       error
+}
+
 // UpSQL returns the Up statements that apply to driver, in order.
 func (m *Migration) UpSQL(driver string) []string { return statementsFor(m.Up, driver) }
 

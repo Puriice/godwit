@@ -28,7 +28,11 @@ type ProjectStore interface {
 // MigrationSource reads and creates migration definitions. dir is the
 // project's configured migrations directory.
 type MigrationSource interface {
+	// Load fails on the first unreadable or invalid file.
 	Load(dir string) ([]*domain.Migration, error)
+	// Scan lists every migration file, recording problems per file instead of
+	// stopping at the first.
+	Scan(dir string) ([]domain.MigrationFile, error)
 	// Create scaffolds a new, empty migration and returns where it was put.
 	Create(dir, name string) (location string, err error)
 	// Resolve returns dir as a displayable absolute location.
