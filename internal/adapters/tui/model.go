@@ -204,7 +204,7 @@ func (m *Model) reloadMigrations() {
 	m.migCount, m.migErr = len(files), err
 	if err == nil {
 		if broken := brokenCount(files); broken > 0 {
-			m.migErr = fmt.Errorf("%d migration file(s) have errors (see the files panel)", broken)
+			m.migErr = fmt.Errorf("%d migration file(s) have errors (see the migrations panel)", broken)
 		}
 	}
 }
@@ -682,15 +682,15 @@ func (m *Model) View() string {
 	case scrForm:
 		return m.viewForm()
 	case scrMigrations:
-		return m.viewMigrations()
+		return clipHeight(m.viewMigrations(), m.height)
 	case scrFiles:
-		return m.viewFiles()
+		return clipHeight(m.viewFiles(), m.height)
 	case scrProcesses:
-		return m.viewProcesses()
+		return clipHeight(m.viewProcesses(), m.height)
 	case scrPlugins:
-		return m.viewPlugins()
+		return clipHeight(m.viewPlugins(), m.height)
 	default:
-		return m.viewTargets()
+		return clipHeight(m.viewTargets(), m.height)
 	}
 }
 

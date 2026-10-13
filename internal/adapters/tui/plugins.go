@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/puriice/godwit/internal/domain"
 )
@@ -78,7 +79,10 @@ func (m *Model) viewPlugins() string {
 		b.WriteString(dimStyle.Render("."))
 		b.WriteRune('\n')
 	}
-	for i, r := range rows {
+	room := max(m.height-lipgloss.Height(b.String())-3-lipgloss.Height(m.footer(pluginsHelp)), 1)
+	start, end := window(m.pcur, len(rows), room)
+	for i := start; i < end; i++ {
+		r := rows[i]
 		where := "project"
 		if r.global {
 			where = "global"
@@ -92,6 +96,10 @@ func (m *Model) viewPlugins() string {
 		if r.overridden {
 			fmt.Fprintf(&b, "    %s\n", warnStyle.Render("overridden by project"))
 		}
+	}
+	if len(rows) > end {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(rows)-end)))
+		b.WriteRune('\n')
 	}
 	if m.pbusy != "" {
 		b.WriteRune('\n')

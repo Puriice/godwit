@@ -27,21 +27,35 @@ func (m *Model) viewFiles() string {
 	}
 
 	room := max(m.height-9-lipgloss.Height(m.footer(filesHelp)), 3)
-	start := 0
-	if m.fcur >= room {
-		start = m.fcur - room + 1
+	// A file with an error takes a line per error line, so budget by lines:
+	// scroll just far enough that the cursor row is the last one that fits.
+	start := min(m.fcur, max(len(files)-1, 0))
+	for lines := fileLines(files, start); start > 0 && lines+fileLines(files, start-1) <= room; {
+		start--
+		lines += fileLines(files, start)
 	}
-	end := min(start+room, len(files))
-	for i := start; i < end; i++ {
+	used, end := 0, start
+	for i := start; i < len(files); i++ {
 		f := files[i]
 		if f.Err != nil {
+			errLines := strings.Split(f.Err.Error(), "\n")
+			if used > 0 && used+1+len(errLines) > room {
+				break
+			}
+			used += 1 + len(errLines)
+			end = i + 1
 			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), errStyle.Render(f.Name+"  ERROR"))
-			for line := range strings.SplitSeq(f.Err.Error(), "\n") {
+			for _, line := range errLines {
 				b.WriteString(errStyle.Render("    " + line))
 				b.WriteRune('\n')
 			}
 			continue
 		}
+		if used >= room {
+			break
+		}
+		used++
+		end = i + 1
 		mg := f.Migration
 		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.fcur), mg.Version, truncate(mg.Name, 24), dimStyle.Render(migSummary(mg)+m.disabledNote(mg.Version)))
 	}
@@ -59,6 +73,17 @@ func (m *Model) viewFiles() string {
 		b.WriteRune('\n')
 	}
 	return b.String() + m.footer(filesHelp)
+}
+
+// fileLines is how many lines the i'th file takes in the list, or 0 past the end.
+func fileLines(files []domain.MigrationFile, i int) int {
+	if i < 0 || i >= len(files) {
+		return 0
+	}
+	if files[i].Err != nil {
+		return 1 + strings.Count(files[i].Err.Error(), "\n") + 1
+	}
+	return 1
 }
 
 // disabledNote describes a migration's default and any per-target overrides.

@@ -22,6 +22,28 @@ var (
 	cursorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 )
 
+// window picks the slice [start, end) of n rows to show in room lines so the
+// row at cur stays visible.
+func window(cur, n, room int) (start, end int) {
+	if cur >= room {
+		start = cur - room + 1
+	}
+	return start, min(start+room, n)
+}
+
+// clipHeight keeps the first h lines of s, so a view taller than the terminal
+// loses its bottom rather than its header.
+func clipHeight(s string, h int) string {
+	if h <= 0 {
+		return s
+	}
+	lines := strings.SplitAfter(s, "\n")
+	if len(lines) <= h {
+		return s
+	}
+	return strings.TrimRight(strings.Join(lines[:h], ""), "\n")
+}
+
 func pointer(selected bool) string {
 	if selected {
 		return cursorStyle.Render("› ")
@@ -130,7 +152,11 @@ func (m *Model) viewTargets() string {
 		b.WriteString(dimStyle.Render("No targets yet. Press a to add one."))
 		b.WriteRune('\n')
 	}
-	for i, t := range ts {
+	// Two lines per target; leave room for the header, count line and footer.
+	room := max((m.height-lipgloss.Height(b.String())-2-lipgloss.Height(m.footer(targetsHelp)))/2, 1)
+	start, end := window(m.cursor, len(ts), room)
+	for i := start; i < end; i++ {
+		t := ts[i]
 		st := m.state(t.Name)
 		var status string
 		switch {
@@ -153,6 +179,10 @@ func (m *Model) viewTargets() string {
 		}
 		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor), label, dimStyle.Render(targetLine(t)))
 		fmt.Fprintf(&b, "    %s\n", status)
+	}
+	if len(ts) > end {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(ts)-end)))
+		b.WriteRune('\n')
 	}
 	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
 	return b.String() + m.footer(targetsHelp)
@@ -276,11 +306,7 @@ func (m *Model) viewMigrations() string {
 	foot := m.footer(help)
 	logLines := min(len(st.log), 6)
 	room := max(m.height-11-logLines-lipgloss.Height(foot)-lipgloss.Height(below), 3)
-	start := 0
-	if m.mcur >= room {
-		start = m.mcur - room + 1
-	}
-	end := min(start+room, len(st.items))
+	start, end := window(m.mcur, len(st.items), room)
 	var list strings.Builder
 	for i := start; i < end; i++ {
 		it := st.items[i]
