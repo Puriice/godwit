@@ -27,21 +27,30 @@ func (m *Model) viewFiles() string {
 	}
 
 	room := max(m.height-9-lipgloss.Height(m.footer(filesHelp)), 3)
-	start := 0
-	if m.fcur >= room {
-		start = m.fcur - room + 1
-	}
-	end := min(start+room, len(files))
-	for i := start; i < end; i++ {
+	start, _ := window(m.fcur, len(files), room)
+	// A file with an error takes a line per error line, so budget by lines.
+	used, end := 0, start
+	for i := start; i < len(files); i++ {
 		f := files[i]
 		if f.Err != nil {
+			errLines := strings.Split(f.Err.Error(), "\n")
+			if used > 0 && used+1+len(errLines) > room {
+				break
+			}
+			used += 1 + len(errLines)
+			end = i + 1
 			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), errStyle.Render(f.Name+"  ERROR"))
-			for line := range strings.SplitSeq(f.Err.Error(), "\n") {
+			for _, line := range errLines {
 				b.WriteString(errStyle.Render("    " + line))
 				b.WriteRune('\n')
 			}
 			continue
 		}
+		if used >= room {
+			break
+		}
+		used++
+		end = i + 1
 		mg := f.Migration
 		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.fcur), mg.Version, truncate(mg.Name, 24), dimStyle.Render(migSummary(mg)+m.disabledNote(mg.Version)))
 	}

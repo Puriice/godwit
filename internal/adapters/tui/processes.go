@@ -142,7 +142,10 @@ func (m *Model) viewProcesses() string {
 	// in a second column, or below the list on a terminal too narrow for two.
 	detailW, wide := m.processColumns()
 	var list strings.Builder
-	for i, it := range items {
+	room := max(m.height-lipgloss.Height(b.String())-8-lipgloss.Height(m.footer(processesHelp)), 1)
+	start, end := window(m.prcur, len(items), room)
+	for i := start; i < end; i++ {
+		it := items[i]
 		ptr := pointer(i == m.prcur)
 		if it.queued < 0 {
 			list.WriteString(m.processRow(ptr, it.target.Name, m.state(it.target.Name)))
@@ -175,7 +178,7 @@ func (m *Model) viewProcesses() string {
 	} else {
 		fmt.Fprintf(&b, "\n%s\n", titleStyle.Render("Log"))
 	}
-	tail := max(min(m.height-22, 20), 4)
+	tail := max(min(m.height-22, 20), 1)
 	log := st.log
 	if len(log) > tail {
 		log = log[len(log)-tail:]
