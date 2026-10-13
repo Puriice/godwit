@@ -34,6 +34,10 @@ type handshakeResult struct {
 	Schemes  []string `json:"schemes,omitempty"`
 	// NoHost marks drivers without a network endpoint (file databases).
 	NoHost bool `json:"noHost,omitempty"`
+	// Translate lists the tools ("goose") whose version table the plugin can
+	// read and whose history it can import, through translate_read and
+	// translate_import. Plugins that leave it out are never sent those.
+	Translate []string `json:"translate,omitempty"`
 }
 
 type wireTarget struct {
@@ -90,4 +94,30 @@ type wireRecord struct {
 
 type appliedResult struct {
 	Records []wireRecord `json:"records"`
+}
+
+type translateReadParams struct {
+	Tool  string `json:"tool"`
+	Table string `json:"table"`
+}
+
+type wireForeignRow struct {
+	Version int64     `json:"version"`
+	Applied bool      `json:"applied"`
+	At      time.Time `json:"at"`
+}
+
+// translateReadResult lists the tool's version table, oldest row first. Found
+// is false when the table does not exist.
+type translateReadResult struct {
+	Found bool             `json:"found"`
+	Rows  []wireForeignRow `json:"rows"`
+}
+
+type translateImportParams struct {
+	Records []wireRecord `json:"records"`
+}
+
+type translateImportResult struct {
+	Added int `json:"added"`
 }

@@ -159,7 +159,7 @@ func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (a
 		c.close()
 		return nil, err
 	}
-	return &database{c: c, driver: name}, nil
+	return &database{c: c, driver: name, translate: d.hs.Translate}, nil
 }
 
 func toWire(t domain.Target) wireTarget {

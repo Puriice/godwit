@@ -51,6 +51,9 @@ type Info struct {
 	// NoHost marks databases without a network endpoint (a file, for example).
 	// godwit then asks for no host, user or password.
 	NoHost bool
+	// Translate lists the tools ("goose") your connections can import history
+	// from by implementing Translator. Leave it empty for none.
+	Translate []string
 }
 
 // Target is a database to migrate. Every field is optional except Driver.
@@ -90,6 +93,31 @@ type Migration struct {
 	// Batch numbers the apply run. For Apply, store it in the row's batch
 	// column; it is 0 for Revert.
 	Batch int64
+}
+
+// ForeignRow is one row of another migration tool's version table.
+type ForeignRow struct {
+	Version int64
+	// Applied is true for a row that applied Version, false for one that rolled
+	// it back.
+	Applied bool
+	At      time.Time
+}
+
+// Translator is an optional interface for a Connection, used by
+// "godwit translate" to move a project over from another migration tool. List
+// the tools it handles in Info.Translate; godwit sends nothing for others.
+type Translator interface {
+	// ReadForeign returns the rows of tool's version table (table names it),
+	// oldest first, as the tool wrote them: for goose, version_id, is_applied
+	// and tstamp ordered by id. found is false when the table does not exist.
+	// Only read from it.
+	ReadForeign(ctx context.Context, tool, table string) (rows []ForeignRow, found bool, err error)
+
+	// ImportRecords inserts records into the state table, keeping each AppliedAt,
+	// and skips any whose Version already has a row. It returns how many it
+	// added. Do not run any migration SQL.
+	ImportRecords(ctx context.Context, recs []Record) (added int, err error)
 }
 
 // Driver is the plugin's entry point: it describes the database engine, parses

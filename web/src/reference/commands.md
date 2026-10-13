@@ -36,6 +36,10 @@ Migrations:
   process cancel <target>                  cancel the run in progress
   process dequeue <target> <position>      remove one queued job
   process clear-queue <target>             remove every queued job of a target
+
+Translate:
+  translate goose [--dry-run] [--table NAME] [target...]
+                                           move a project from goose (see the guide)
 ```
 
 Without target names, `migrate` uses every enabled target. It tries all of them

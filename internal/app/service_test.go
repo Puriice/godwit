@@ -84,8 +84,11 @@ func (f *fakeSource) Scan(string) ([]domain.MigrationFile, error) {
 	}
 	return out, nil
 }
-func (f *fakeSource) Resolve(dir string) string { return "/abs/" + dir }
-func (f *fakeSource) EnsureDir(string) error    { return nil }
+func (f *fakeSource) Resolve(dir string) string            { return "/abs/" + dir }
+func (f *fakeSource) EnsureDir(string) error               { return nil }
+func (f *fakeSource) Raw(string) ([]domain.RawFile, error) { return nil, nil }
+func (f *fakeSource) Write(string, string, string) error   { return nil }
+func (f *fakeSource) Check(string) (string, error)         { return "", nil }
 func (f *fakeSource) Create(dir, name string) (string, error) {
 	f.created = append(f.created, dir+"/"+name)
 	return dir + "/" + name, nil

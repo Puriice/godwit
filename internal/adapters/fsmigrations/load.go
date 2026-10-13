@@ -146,6 +146,55 @@ func (s *Source) Scan(dir string) ([]domain.MigrationFile, error) {
 	return out, nil
 }
 
+// Raw lists the .sql and .go files in dir, unparsed, sorted by name. A missing
+// directory yields none.
+func (s *Source) Raw(dir string) ([]domain.RawFile, error) {
+	dir = s.Resolve(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []domain.RawFile
+	for _, e := range entries {
+		ext := filepath.Ext(e.Name())
+		if e.IsDir() || (ext != ".sql" && ext != ".go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, domain.RawFile{Name: e.Name(), Content: string(b)})
+	}
+	return out, nil
+}
+
+// Write replaces the contents of the existing file name in dir.
+func (s *Source) Write(dir, name, content string) error {
+	if name != filepath.Base(name) {
+		return fmt.Errorf("invalid file name %q", name)
+	}
+	path := filepath.Join(s.Resolve(dir), name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), info.Mode().Perm())
+}
+
+// Check parses content as a migration and returns the checksum Scan would
+// record for a file holding exactly that content.
+func (s *Source) Check(content string) (string, error) {
+	if _, err := ParseWith(content, s.drivers, s.norm()); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:]), nil
+}
+
 const template = `-- +godwit Up
 -- +godwit driver: all
 

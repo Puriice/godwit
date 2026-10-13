@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/puriice/godwit/internal/app"
 	"github.com/puriice/godwit/internal/domain"
@@ -13,9 +14,52 @@ import (
 type database struct {
 	c      *client
 	driver string
+	// translate is what the plugin's handshake offered (see handshakeResult).
+	translate []string
 }
 
-var _ app.Database = (*database)(nil)
+var (
+	_ app.Database        = (*database)(nil)
+	_ app.ForeignImporter = (*database)(nil)
+)
+
+func (d *database) canTranslate(tool string) error {
+	if !slices.Contains(d.translate, tool) {
+		return fmt.Errorf("the %s plugin does not support importing from %s", d.driver, tool)
+	}
+	return nil
+}
+
+func (d *database) ForeignApplied(ctx context.Context, tool, table string) ([]domain.ForeignRow, bool, error) {
+	if err := d.canTranslate(tool); err != nil {
+		return nil, false, err
+	}
+	var res translateReadResult
+	if err := d.c.call(ctx, "translate_read", translateReadParams{Tool: tool, Table: table}, &res); err != nil {
+		return nil, false, err
+	}
+	out := make([]domain.ForeignRow, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		out = append(out, domain.ForeignRow{Version: r.Version, Applied: r.Applied, At: r.At})
+	}
+	return out, res.Found, nil
+}
+
+func (d *database) ImportRecords(ctx context.Context, recs []domain.Record) (int, error) {
+	if len(d.translate) == 0 {
+		return 0, fmt.Errorf("the %s plugin does not support importing history", d.driver)
+	}
+	wire := make([]wireRecord, 0, len(recs))
+	for _, r := range recs {
+		wire = append(wire, wireRecord{Version: r.Version, Name: r.Name, Checksum: r.Checksum,
+			AppliedAt: r.AppliedAt, DurationMS: r.DurationMS, Dirty: r.Dirty, Batch: r.Batch})
+	}
+	var res translateImportResult
+	if err := d.c.call(ctx, "translate_import", translateImportParams{Records: wire}, &res); err != nil {
+		return 0, err
+	}
+	return res.Added, nil
+}
 
 func (d *database) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
