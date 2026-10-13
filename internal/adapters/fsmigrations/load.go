@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,8 +53,28 @@ func (s *Source) Resolve(dir string) string {
 func (s *Source) EnsureDir(dir string) error { return os.MkdirAll(s.Resolve(dir), 0o755) }
 
 // Load reads and parses every migration in dir, sorted by version. A missing
-// directory yields no migrations.
+// directory yields no migrations. It fails on the first invalid file; use Scan
+// to see every file's outcome.
 func (s *Source) Load(dir string) ([]*domain.Migration, error) {
+	files, err := s.Scan(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []*domain.Migration
+	for _, f := range files {
+		if f.Err != nil {
+			return nil, f.Err
+		}
+		out = append(out, f.Migration)
+	}
+	return out, nil
+}
+
+// Scan reads and parses every migration file in dir, sorted by version, then
+// name (files with an unusable version come last). A file that cannot be used
+// is returned with Err set rather than aborting the scan. A missing directory
+// yields no files.
+func (s *Source) Scan(dir string) ([]domain.MigrationFile, error) {
 	dir = s.Resolve(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -62,7 +83,11 @@ func (s *Source) Load(dir string) ([]*domain.Migration, error) {
 		}
 		return nil, err
 	}
-	var out []*domain.Migration
+	type scanned struct {
+		ver  int64
+		file domain.MigrationFile
+	}
+	var found []scanned
 	seen := map[int64]string{}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -72,26 +97,33 @@ func (s *Source) Load(dir string) ([]*domain.Migration, error) {
 		if m == nil {
 			continue
 		}
+		fail := func(ver int64, err error) {
+			found = append(found, scanned{ver, domain.MigrationFile{Name: e.Name(), Err: err}})
+		}
 		ver, err := strconv.ParseInt(m[1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("%s: bad version: %w", e.Name(), err)
+			fail(math.MaxInt64, fmt.Errorf("%s: bad version: %w", e.Name(), err))
+			continue
 		}
 		if prev, dup := seen[ver]; dup {
-			return nil, fmt.Errorf("duplicate version %d: %s and %s", ver, prev, e.Name())
+			fail(ver, fmt.Errorf("duplicate version %d: %s and %s", ver, prev, e.Name()))
+			continue
 		}
 		seen[ver] = e.Name()
 
 		path := filepath.Join(dir, e.Name())
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			fail(ver, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
 		}
 		parsed, err := ParseWith(string(raw), s.drivers, s.norm())
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", e.Name(), err)
+			fail(ver, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
 		}
 		sum := sha256.Sum256(raw)
-		out = append(out, &domain.Migration{
+		found = append(found, scanned{ver, domain.MigrationFile{Name: e.Name(), Migration: &domain.Migration{
 			Version:       ver,
 			Name:          m[2],
 			Source:        path,
@@ -99,9 +131,18 @@ func (s *Source) Load(dir string) ([]*domain.Migration, error) {
 			Up:            parsed.Up,
 			Down:          parsed.Down,
 			NoTransaction: parsed.NoTransaction,
-		})
+		}}})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	sort.SliceStable(found, func(i, j int) bool {
+		if found[i].ver != found[j].ver {
+			return found[i].ver < found[j].ver
+		}
+		return found[i].file.Name < found[j].file.Name
+	})
+	out := make([]domain.MigrationFile, len(found))
+	for i, f := range found {
+		out[i] = f.file
+	}
 	return out, nil
 }
 

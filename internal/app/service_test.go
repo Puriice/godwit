@@ -77,6 +77,13 @@ type fakeSource struct {
 }
 
 func (f *fakeSource) Load(string) ([]*domain.Migration, error) { return f.migs, nil }
+func (f *fakeSource) Scan(string) ([]domain.MigrationFile, error) {
+	var out []domain.MigrationFile
+	for _, m := range f.migs {
+		out = append(out, domain.MigrationFile{Name: m.Name, Migration: m})
+	}
+	return out, nil
+}
 func (f *fakeSource) Resolve(dir string) string                { return "/abs/" + dir }
 func (f *fakeSource) EnsureDir(string) error                   { return nil }
 func (f *fakeSource) Create(dir, name string) (string, error) {

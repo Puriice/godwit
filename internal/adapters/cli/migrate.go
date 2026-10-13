@@ -135,6 +135,9 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 	if err != nil {
 		return err
 	}
+	if err := reportBrokenMigrations(svc, out); err != nil {
+		return err
+	}
 	return eachTarget(names, out, func(name string) error {
 		items, err := svc.Status(ctx, name)
 		if err != nil {
@@ -154,6 +157,37 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 		}
 		return w.Flush()
 	})
+}
+
+// reportBrokenMigrations lists every migration file with each failure beneath
+// its file, once, and fails if any file is invalid. It returns nil when all
+// files load (or the directory cannot be listed, which Status reports).
+func reportBrokenMigrations(svc *app.Service, out io.Writer) error {
+	files, err := svc.MigrationFiles()
+	if err != nil {
+		return nil
+	}
+	broken := 0
+	for _, f := range files {
+		if f.Err != nil {
+			broken++
+		}
+	}
+	if broken == 0 {
+		return nil
+	}
+	fmt.Fprintf(out, "== migration files (%s) ==\n", svc.MigrationsLocation())
+	for _, f := range files {
+		if f.Err == nil {
+			fmt.Fprintf(out, "%s\n", f.Name)
+			continue
+		}
+		fmt.Fprintf(out, "%s  ERROR\n", f.Name)
+		for line := range strings.SplitSeq(f.Err.Error(), "\n") {
+			fmt.Fprintf(out, "    %s\n", line)
+		}
+	}
+	return fmt.Errorf("%d of %d migration file(s) have errors", broken, len(files))
 }
 
 // detachJobs starts a background worker per target and returns without

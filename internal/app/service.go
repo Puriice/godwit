@@ -307,6 +307,12 @@ func (s *Service) Migrations() ([]*domain.Migration, error) {
 	return s.source.Load(s.MigrationsDir())
 }
 
+// MigrationFiles lists every migration file, including those that failed to
+// load (their Err is set).
+func (s *Service) MigrationFiles() ([]domain.MigrationFile, error) {
+	return s.source.Scan(s.MigrationsDir())
+}
+
 // CreateMigration scaffolds a new migration and returns its location.
 func (s *Service) CreateMigration(name string) (string, error) {
 	return s.source.Create(s.MigrationsDir(), strings.TrimSpace(name))
