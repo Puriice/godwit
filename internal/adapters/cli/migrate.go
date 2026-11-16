@@ -15,12 +15,12 @@ import (
 )
 
 // MigrateUsage documents the migrate subcommands.
-const MigrateUsage = `usage: godwit migrate status [target...]
-       godwit migrate up [-d | --detach] [-n N | --to VERSION] [target...]
-       godwit migrate down [-d | --detach] [-n N | --to VERSION | --batch] [target...]
-       godwit migrate redo [-d | --detach] <version> [target...]
-       godwit migrate clear-dirty <version> <target>
-       godwit migrate new <name>
+const MigrateUsage = `usage: godwit migrate status [-s SERVICE] [target...]
+       godwit migrate up [-s SERVICE] [-d | --detach] [-n N | --to VERSION] [target...]
+       godwit migrate down [-s SERVICE] [-d | --detach] [-n N | --to VERSION | --batch] [target...]
+       godwit migrate redo [-s SERVICE] [-d | --detach] <version> [target...]
+       godwit migrate clear-dirty [-s SERVICE] <version> <target>
+       godwit migrate new [-s SERVICE] <name>
 
   status       show every migration's state on each target
   up           apply pending migrations (all by default)
@@ -33,18 +33,21 @@ const MigrateUsage = `usage: godwit migrate status [target...]
                               in the same run as the newest applied one
   redo         roll back one applied migration and apply it again
   clear-dirty  clear the dirty flag after repairing a failed migration by hand
-  new          create migrations/<timestamp>_<name>.sql from the template
+  new          create <migrations dir>/<timestamp>_<name>.sql from the template;
+               at a workspace root with several services, -s names the service
 
--d or --detach (up, down and redo; put it before the version or target names) starts
-the run in a background process and returns at once. The run keeps going after
-this command, or the terminal, exits. Follow it in the log file the command
-prints, with "godwit migrate status", or in the TUI. A run that is still
-going shows its migrations as running there.
+-d or --detach (up, down and redo; put flags before the version or target names)
+starts the run in a background process and returns at once. The run keeps going
+after this command, or the terminal, exits. Follow it in the log file the command
+prints, with "godwit migrate status", or in the TUI. A run that is still going
+shows its migrations as running there.
 
 Without target names, enabled targets are used; disabled targets are skipped.
-Passwords come from GODWIT_<TARGET>_PASSWORD or .godwit/.env; nothing is
-prompted for. Every target is attempted even if an earlier one fails.
-`
+Passwords come from GODWIT_<TARGET>_PASSWORD (GODWIT_<SERVICE>_<TARGET>_PASSWORD
+for a service's own targets) or .godwit/.env; nothing is prompted for. Every
+target is attempted even if an earlier one fails.
+
+` + ServiceFlagUsage
 
 // Migrate runs "godwit migrate ...". args excludes the leading "migrate".
 func Migrate(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
@@ -73,53 +76,8 @@ func MigrateWith(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 	return errors.New("unknown migrate command\n\n" + MigrateUsage)
 }
 
-// selectTargets resolves explicit names, or every enabled target when none
-// are given.
-func selectTargets(svc *app.Service, names []string) ([]string, error) {
-	if len(names) > 0 {
-		for _, n := range names {
-			if _, ok := svc.Target(n); !ok {
-				return nil, fmt.Errorf("no target named %q", n)
-			}
-		}
-		return names, nil
-	}
-	var out []string
-	for _, t := range svc.Targets() {
-		if !t.Disabled {
-			out = append(out, t.Name)
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("no enabled targets; add one with: godwit auth add <name> <driver> <connection string>")
-	}
-	return out, nil
-}
-
-// eachTarget runs fn on every target and reports all failures together.
-func eachTarget(names []string, out io.Writer, fn func(name string) error) error {
-	var failed []string
-	for _, n := range names {
-		fmt.Fprintf(out, "== %s ==\n", n)
-		if err := fn(n); err != nil {
-			fmt.Fprintf(out, "error: %v\n", err)
-			failed = append(failed, n)
-		}
-	}
-	if len(failed) > 0 {
-		return fmt.Errorf("failed on %d target(s): %s", len(failed), strings.Join(failed, ", "))
-	}
-	return nil
-}
-
 func parseFlags(name string, args []string, define func(*flag.FlagSet)) ([]string, error) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	define(fs)
-	if err := fs.Parse(args); err != nil {
-		return nil, fmt.Errorf("migrate %s: %v\n\n%s", name, err, MigrateUsage)
-	}
-	return fs.Args(), nil
+	return parseCmdFlags("migrate "+name, MigrateUsage, args, define)
 }
 
 func parseVersion(s string) (int64, error) {
@@ -131,15 +89,20 @@ func parseVersion(s string) (int64, error) {
 }
 
 func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
-	names, err := selectTargets(svc, args)
+	var services serviceFlag
+	args, err := parseFlags("status", args, services.define)
 	if err != nil {
 		return err
 	}
-	if err := reportBrokenMigrations(svc, out); err != nil {
+	refs, err := selectRefs(svc, services, args)
+	if err != nil {
 		return err
 	}
-	return eachTarget(names, out, func(name string) error {
-		items, err := svc.Status(ctx, name)
+	if err := reportBrokenMigrations(svc, refServices(refs), out); err != nil {
+		return err
+	}
+	return eachTarget(refs, out, func(ref domain.TargetRef) error {
+		items, err := svc.Status(ctx, ref)
 		if err != nil {
 			return err
 		}
@@ -159,56 +122,66 @@ func migrateStatus(ctx context.Context, svc *app.Service, args []string, out io.
 	})
 }
 
-// reportBrokenMigrations lists every migration file with each failure beneath
-// its file, once, and fails if any file is invalid. It returns nil when all
-// files load (or the directory cannot be listed, which Status reports).
-func reportBrokenMigrations(svc *app.Service, out io.Writer) error {
-	files, err := svc.MigrationFiles()
-	if err != nil {
-		return nil
-	}
-	broken := 0
-	for _, f := range files {
-		if f.Err != nil {
-			broken++
+// reportBrokenMigrations lists, for each service, every migration file with
+// each failure beneath its file, once, and fails if any file is invalid. A
+// service whose files all load (or whose directory cannot be listed, which
+// Status reports) prints nothing.
+func reportBrokenMigrations(svc *app.Service, services []string, out io.Writer) error {
+	broken, total := 0, 0
+	for _, service := range services {
+		files, err := svc.MigrationFiles(service)
+		if err != nil {
+			continue
+		}
+		bad := 0
+		for _, f := range files {
+			if f.Err != nil {
+				bad++
+			}
+		}
+		if bad == 0 {
+			continue
+		}
+		broken, total = broken+bad, total+len(files)
+		fmt.Fprintln(out, filesHeading(svc, service))
+		for _, f := range files {
+			if f.Err == nil {
+				fmt.Fprintf(out, "%s\n", f.Name)
+				continue
+			}
+			fmt.Fprintf(out, "%s  ERROR\n", f.Name)
+			for line := range strings.SplitSeq(f.Err.Error(), "\n") {
+				fmt.Fprintf(out, "    %s\n", line)
+			}
 		}
 	}
 	if broken == 0 {
 		return nil
 	}
-	fmt.Fprintf(out, "== migration files (%s) ==\n", svc.MigrationsLocation())
-	for _, f := range files {
-		if f.Err == nil {
-			fmt.Fprintf(out, "%s\n", f.Name)
-			continue
-		}
-		fmt.Fprintf(out, "%s  ERROR\n", f.Name)
-		for line := range strings.SplitSeq(f.Err.Error(), "\n") {
-			fmt.Fprintf(out, "    %s\n", line)
-		}
-	}
-	return fmt.Errorf("%d of %d migration file(s) have errors", broken, len(files))
+	return fmt.Errorf("%d of %d migration file(s) have errors", broken, total)
 }
 
 // detachJobs starts a background worker per target and returns without
 // waiting for any of them; they keep running after this process exits.
-func detachJobs(svc *app.Service, bg app.BackgroundRunner, names []string, out io.Writer, job func(target string) domain.Job) error {
+func detachJobs(svc *app.Service, bg app.BackgroundRunner, refs []domain.TargetRef, out io.Writer, job func(ref domain.TargetRef) domain.Job) error {
 	if bg == nil {
 		return errors.New("--detach is not available here")
 	}
-	return eachTarget(names, out, func(name string) error {
-		if svc.NeedsPassword(name) && !svc.HasPassword(name) {
-			return fmt.Errorf("no password for %q; set GODWIT_%s_PASSWORD or add it to .godwit/.env", name, strings.ToUpper(name))
+	return eachTarget(refs, out, func(ref domain.TargetRef) error {
+		if svc.NeedsPassword(ref) && !svc.HasPassword(ref) {
+			return fmt.Errorf("no password for %q; set %s or add it to .godwit/.env", ref.String(), svc.PasswordKey(ref))
 		}
-		queued, err := bg.Start(job(name))
+		j := job(ref)
+		j.Service, j.Target = ref.Service, ref.Target
+		queued, err := bg.Start(j)
 		if err != nil {
 			return err
 		}
 		if queued {
-			fmt.Fprintf(out, "queued behind the run in progress; it starts when that run ends well. progress: %s\n", bg.LogPath(name))
+			fmt.Fprintf(out, "queued behind the run in progress; it starts when that run ends well. progress: %s\n", bg.LogPath(ref))
 			return nil
 		}
-		fmt.Fprintf(out, "started in the background; progress: %s\n", bg.LogPath(name))
+		fmt.Fprintf(out, "started in the background; progress: %s\n", bg.LogPath(ref))
 		return nil
 	})
 }
@@ -217,11 +190,13 @@ func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 	var n int
 	var to string
 	var batch, detach bool
+	var services serviceFlag
 	rest, err := parseFlags(string(dir), args, func(fs *flag.FlagSet) {
 		fs.IntVar(&n, "n", 0, "")
 		fs.StringVar(&to, "to", "", "")
 		fs.BoolVar(&detach, "detach", false, "")
 		fs.BoolVar(&detach, "d", false, "")
+		services.define(fs)
 		if dir == domain.Down {
 			fs.BoolVar(&batch, "batch", false, "")
 		}
@@ -244,13 +219,13 @@ func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 			return err
 		}
 	}
-	names, err := selectTargets(svc, rest)
+	refs, err := selectRefs(svc, services, rest)
 	if err != nil {
 		return err
 	}
 	if detach {
-		return detachJobs(svc, bg, names, out, func(target string) domain.Job {
-			j := domain.Job{Target: target, N: n, Version: version}
+		return detachJobs(svc, bg, refs, out, func(domain.TargetRef) domain.Job {
+			j := domain.Job{N: n, Version: version}
 			switch {
 			case dir == domain.Up && version != 0:
 				j.Op = domain.OpUpTo
@@ -267,20 +242,20 @@ func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 		})
 	}
 	prog := func(e domain.Event) { printEvent(out, e) }
-	return eachTarget(names, out, func(name string) error {
+	return eachTarget(refs, out, func(ref domain.TargetRef) error {
 		var done int
 		var err error
 		switch {
 		case dir == domain.Up && version != 0:
-			done, err = svc.UpTo(ctx, name, version, prog)
+			done, err = svc.UpTo(ctx, ref, version, prog)
 		case dir == domain.Up:
-			done, err = svc.Up(ctx, name, n, prog)
+			done, err = svc.Up(ctx, ref, n, prog)
 		case batch:
-			done, err = svc.DownBatch(ctx, name, prog)
+			done, err = svc.DownBatch(ctx, ref, prog)
 		case version != 0:
-			done, err = svc.DownTo(ctx, name, version, prog)
+			done, err = svc.DownTo(ctx, ref, version, prog)
 		default:
-			done, err = svc.Down(ctx, name, n, prog)
+			done, err = svc.Down(ctx, ref, n, prog)
 		}
 		if err != nil {
 			return err
@@ -292,9 +267,11 @@ func migrateMove(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 
 func migrateRedo(ctx context.Context, svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
 	var detach bool
+	var services serviceFlag
 	args, err := parseFlags("redo", args, func(fs *flag.FlagSet) {
 		fs.BoolVar(&detach, "detach", false, "")
 		fs.BoolVar(&detach, "d", false, "")
+		services.define(fs)
 	})
 	if err != nil {
 		return err
@@ -306,18 +283,18 @@ func migrateRedo(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 	if err != nil {
 		return err
 	}
-	names, err := selectTargets(svc, args[1:])
+	refs, err := selectRefs(svc, services, args[1:])
 	if err != nil {
 		return err
 	}
 	if detach {
-		return detachJobs(svc, bg, names, out, func(target string) domain.Job {
-			return domain.Job{Target: target, Op: domain.OpRedo, Version: version}
+		return detachJobs(svc, bg, refs, out, func(domain.TargetRef) domain.Job {
+			return domain.Job{Op: domain.OpRedo, Version: version}
 		})
 	}
 	prog := func(e domain.Event) { printEvent(out, e) }
-	return eachTarget(names, out, func(name string) error {
-		if err := svc.Redo(ctx, name, version, prog); err != nil {
+	return eachTarget(refs, out, func(ref domain.TargetRef) error {
+		if err := svc.Redo(ctx, ref, version, prog); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "1 migration(s) redone")
@@ -326,6 +303,11 @@ func migrateRedo(ctx context.Context, svc *app.Service, bg app.BackgroundRunner,
 }
 
 func migrateClearDirty(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
+	var services serviceFlag
+	args, err := parseFlags("clear-dirty", args, services.define)
+	if err != nil {
+		return err
+	}
 	if len(args) != 2 {
 		return fmt.Errorf("migrate clear-dirty takes a version and a target\n\n%s", MigrateUsage)
 	}
@@ -333,21 +315,45 @@ func migrateClearDirty(ctx context.Context, svc *app.Service, args []string, out
 	if err != nil {
 		return err
 	}
-	if _, ok := svc.Target(args[1]); !ok {
-		return fmt.Errorf("no target named %q", args[1])
-	}
-	if err := svc.ClearDirty(ctx, args[1], version); err != nil {
+	ref, err := selectRef(svc, services, args[1])
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Cleared the dirty flag of %d on %q.\n", version, args[1])
+	if err := svc.ClearDirty(ctx, ref, version); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Cleared the dirty flag of %d on %q.\n", version, ref.String())
 	return nil
 }
 
+// newMigrationService is the service "migrate new" creates a file for: the
+// one named with -s, else the current one, else the only one.
+func newMigrationService(svc *app.Service, services serviceFlag) (string, error) {
+	service, err := oneScope(svc, services)
+	if err != nil || service != "" || !svc.IsWorkspace() {
+		return service, err
+	}
+	all := svc.Services()
+	if len(all) == 1 {
+		return all[0], nil
+	}
+	return "", fmt.Errorf("migrate new at the workspace root needs a service: -s <service> (services: %s)", strings.Join(all, ", "))
+}
+
 func migrateNew(svc *app.Service, args []string, out io.Writer) error {
+	var services serviceFlag
+	args, err := parseFlags("new", args, services.define)
+	if err != nil {
+		return err
+	}
 	if len(args) != 1 {
 		return fmt.Errorf("migrate new takes 1 argument (name), got %d\n\n%s", len(args), MigrateUsage)
 	}
-	path, err := svc.CreateMigration(args[0])
+	service, err := newMigrationService(svc, services)
+	if err != nil {
+		return err
+	}
+	path, err := svc.CreateMigration(service, args[0])
 	if err != nil {
 		return err
 	}

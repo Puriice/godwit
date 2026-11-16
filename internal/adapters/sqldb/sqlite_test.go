@@ -13,7 +13,7 @@ import (
 func TestSQLiteApplyRevert(t *testing.T) {
 	ctx := context.Background()
 	tg := domain.Target{Name: "lite", Driver: "sqlite", Database: filepath.Join(t.TempDir(), "app.db")}
-	db, err := sqldb.NewFactory().Open(ctx, tg, "")
+	db, err := sqldb.NewFactory().Open(ctx, tg, "", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestSQLiteBatchColumn(t *testing.T) {
 	}
 
 	tg := domain.Target{Name: "lite", Driver: "sqlite", Database: path}
-	db, err := sqldb.NewFactory().Open(ctx, tg, "")
+	db, err := sqldb.NewFactory().Open(ctx, tg, "", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}

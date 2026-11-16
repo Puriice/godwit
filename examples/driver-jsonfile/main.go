@@ -48,19 +48,22 @@ func (driver) Open(_ context.Context, t godwit.Target, _ string) (godwit.Connect
 	if t.Database == "" {
 		return nil, errors.New("target has no database (file name)")
 	}
-	return &conn{path: t.Database}, nil
+	return &conn{path: t.Database, table: t.Table}, nil
 }
 
-// state is the whole "database": godwit's state table plus a log of the
-// statements a real database would have executed.
+// state is the whole "database": godwit's state tables, keyed by table name
+// (one per workspace service), plus a log of the statements a real database
+// would have executed.
 type state struct {
-	Records []godwit.Record `json:"records"`
-	Log     []string        `json:"log"`
+	Tables map[string][]godwit.Record `json:"tables"`
+	Log    []string                   `json:"log"`
 }
 
-type conn struct{ path string }
+// conn is one open "database". table is the state table it owns.
+type conn struct{ path, table string }
 
 func (c *conn) load() (s state, err error) {
+	s.Tables = map[string][]godwit.Record{}
 	raw, err := os.ReadFile(c.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -68,7 +71,13 @@ func (c *conn) load() (s state, err error) {
 	if err != nil {
 		return s, err
 	}
-	return s, json.Unmarshal(raw, &s)
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return s, err
+	}
+	if s.Tables == nil {
+		s.Tables = map[string][]godwit.Record{}
+	}
+	return s, nil
 }
 
 func (c *conn) save(s state) error {
@@ -92,7 +101,7 @@ func (c *conn) EnsureTable(context.Context) error {
 // Lock fails instead of waiting if another run holds the lock, as godwit
 // expects. A lock file is the file-database equivalent of an advisory lock.
 func (c *conn) Lock(context.Context) (func() error, error) {
-	lock := c.path + ".lock"
+	lock := c.path + "." + c.table + ".lock"
 	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("another migration holds %s", lock)
@@ -106,7 +115,7 @@ func (c *conn) Lock(context.Context) (func() error, error) {
 
 func (c *conn) Applied(context.Context) ([]godwit.Record, error) {
 	s, err := c.load()
-	return s.Records, err
+	return s.Tables[c.table], err
 }
 
 // Apply follows the dirty-flag protocol for engines without transactional DDL:
@@ -118,9 +127,10 @@ func (c *conn) Apply(_ context.Context, m godwit.Migration) error {
 	if err != nil {
 		return err
 	}
-	s.Records = append(s.Records, godwit.Record{
-		Version: m.Version, Name: m.Name, Checksum: m.Checksum, AppliedAt: start.UTC(), Dirty: true,
+	recs := append(s.Tables[c.table], godwit.Record{
+		Version: m.Version, Name: m.Name, Checksum: m.Checksum, AppliedAt: start.UTC(), Dirty: true, Batch: m.Batch,
 	})
+	s.Tables[c.table] = recs
 	if err := c.save(s); err != nil {
 		return err
 	}
@@ -132,7 +142,7 @@ func (c *conn) Apply(_ context.Context, m godwit.Migration) error {
 	}
 	s.Log = append(s.Log, m.Statements...) // "execute" the statements
 
-	last := &s.Records[len(s.Records)-1]
+	last := &recs[len(recs)-1]
 	last.Dirty, last.DurationMS = false, time.Since(start).Milliseconds()
 	return c.save(s)
 }
@@ -143,9 +153,10 @@ func (c *conn) Revert(_ context.Context, m godwit.Migration) error {
 	if err != nil {
 		return err
 	}
-	for i := range s.Records {
-		if s.Records[i].Version == m.Version {
-			s.Records[i].Dirty = true
+	recs := s.Tables[c.table]
+	for i := range recs {
+		if recs[i].Version == m.Version {
+			recs[i].Dirty = true
 		}
 	}
 	if err := c.save(s); err != nil {
@@ -154,13 +165,13 @@ func (c *conn) Revert(_ context.Context, m godwit.Migration) error {
 
 	s.Log = append(s.Log, m.Statements...)
 
-	kept := s.Records[:0]
-	for _, r := range s.Records {
+	kept := recs[:0]
+	for _, r := range recs {
 		if r.Version != m.Version {
 			kept = append(kept, r)
 		}
 	}
-	s.Records = kept
+	s.Tables[c.table] = kept
 	return c.save(s)
 }
 
@@ -169,9 +180,10 @@ func (c *conn) ClearDirty(_ context.Context, version int64) error {
 	if err != nil {
 		return err
 	}
-	for i := range s.Records {
-		if s.Records[i].Version == version {
-			s.Records[i].Dirty = false
+	recs := s.Tables[c.table]
+	for i := range recs {
+		if recs[i].Version == version {
+			recs[i].Dirty = false
 		}
 	}
 	return c.save(s)

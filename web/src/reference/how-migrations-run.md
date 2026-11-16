@@ -9,7 +9,11 @@ description: State, locking and failure behaviour per database.
   checksum and a dirty flag. Status is one of `pending`, `applied`, `modified`
   (file changed after it was applied), `dirty`, or `missing` (recorded, but the
   file is gone).
-- **Locking:** PostgreSQL uses `pg_advisory_lock`, MySQL uses `GET_LOCK`. SQLite has no advisory lock; its single-writer file lock and the version primary key protect against concurrent runs.
+- **State table:** state lives in `godwit_migration` in each target. In a
+  [workspace](../guides/monorepos.md), each service uses its own table,
+  `godwit_migration_<service>`, so services sharing a database keep separate
+  histories.
+- **Locking:** PostgreSQL uses `pg_advisory_lock`, MySQL uses `GET_LOCK`. SQLite has no advisory lock; its single-writer file lock and the version primary key protect against concurrent runs. The lock is per state table, so two services migrating one shared database do not wait for each other.
 - **PostgreSQL:** each migration, including its state-table change, runs in one
   transaction, so a failure rolls back and the migration stays pending. Use
   `NoTransaction` for statements that cannot run in one, such as
@@ -25,7 +29,7 @@ description: State, locking and failure behaviour per database.
 - **Debug panel (TUI only):** on a target's migration list, `←`/`→` switch between
   the list and a debug panel. It follows the cursor and shows what the target has
   recorded for that migration. `p`, `d` and `a` force it to pending, dirty or
-  applied, after a confirmation. Forcing rewrites only the `godwit_migration`
+  applied, after a confirmation. Forcing rewrites only the state table's
   record and never runs SQL or changes the schema, so use it to reproduce or
   repair states. Plugin drivers do not support it.
 

@@ -148,16 +148,61 @@ func (m *Model) viewTargets() string {
 	var b strings.Builder
 	b.WriteString(m.header(m.tabs()))
 	ts := m.targets()
-	if len(ts) == 0 {
+	ws := m.svc.IsWorkspace()
+	switch {
+	case len(ts) > 0:
+	case ws && len(m.svc.Services()) == 0:
+		b.WriteString(dimStyle.Render("This workspace has no services yet. Add one with: godwit service add <dir>"))
+		b.WriteRune('\n')
+	default:
 		b.WriteString(dimStyle.Render("No targets yet. Press a to add one."))
 		b.WriteRune('\n')
 	}
-	// Two lines per target; leave room for the header, count line and footer.
-	room := max((m.height-lipgloss.Height(b.String())-2-lipgloss.Height(m.footer(targetsHelp)))/2, 1)
-	start, end := window(m.cursor, len(ts), room)
+	// Two lines per target, and in a workspace a heading line wherever the
+	// service changes (and over the first row shown); leave room for the
+	// header, count line and footer.
+	room := max(m.height-lipgloss.Height(b.String())-2-lipgloss.Height(m.footer(targetsHelp)), 2)
+	heading := func(i int, first bool) bool {
+		return ws && (first || i == 0 || ts[i-1].ref.Service != ts[i].ref.Service)
+	}
+	cost := func(i int, first bool) int {
+		if heading(i, first) {
+			return 3
+		}
+		return 2
+	}
+	var start, end int
+	if ws {
+		cur := min(max(m.cursor, 0), max(len(ts)-1, 0))
+		start = cur
+		for used := cost(cur, true); start > 0; {
+			// Moving the start up turns the old first row's forced heading
+			// into an ordinary one.
+			extra := cost(start-1, true) + cost(start, false) - cost(start, true)
+			if used+extra > room {
+				break
+			}
+			used += extra
+			start--
+		}
+		end = start
+		for used := 0; end < len(ts); end++ {
+			c := cost(end, end == start)
+			if used > 0 && used+c > room {
+				break
+			}
+			used += c
+		}
+	} else {
+		start, end = window(m.cursor, len(ts), max(room/2, 1))
+	}
 	for i := start; i < end; i++ {
 		t := ts[i]
-		st := m.state(t.Name)
+		if heading(i, i == start) {
+			svc := t.ref.Service
+			fmt.Fprintf(&b, "%s %s\n", titleStyle.Render(svc), dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCounts[svc], m.svc.MigrationsLocation(svc))))
+		}
+		st := m.state(t.ref)
 		var status string
 		switch {
 		case t.Disabled:
@@ -177,14 +222,22 @@ func (m *Model) viewTargets() string {
 		if t.Disabled {
 			label = dimStyle.Render(label)
 		}
-		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor), label, dimStyle.Render(targetLine(t)))
+		line := targetLine(t.Target)
+		if ws && m.svc.IsGlobal(t.ref) {
+			line += " · global"
+		}
+		fmt.Fprintf(&b, "%s%s %s\n", pointer(i == m.cursor), label, dimStyle.Render(line))
 		fmt.Fprintf(&b, "    %s\n", status)
 	}
 	if len(ts) > end {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(ts)-end)))
 		b.WriteRune('\n')
 	}
-	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation())))
+	if ws {
+		fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %d service(s)", m.migCount, len(m.svc.DefaultServices()))))
+	} else {
+		fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%d migration file(s) in %s", m.migCount, m.svc.MigrationsLocation(""))))
+	}
 	return b.String() + m.footer(targetsHelp)
 }
 
@@ -221,11 +274,15 @@ func (m *Model) updateTargets(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x":
 		if t, ok := m.currentTarget(); ok {
-			return m, m.openConfirm(fmt.Sprintf("Remove target %q and its saved password? (the database is untouched)", t.Name), func(m *Model) tea.Cmd {
-				if err := m.svc.RemoveTarget(t.Name); err != nil {
+			if t.ref.Service != "" && m.svc.IsGlobal(t.ref) {
+				m.notice = fmt.Sprintf("%s is a global target shared by every service; remove it at the workspace root with: godwit auth remove %s", t.Name, t.Name)
+				break
+			}
+			return m, m.openConfirm(fmt.Sprintf("Remove target %q and its saved password? (the database is untouched)", t.label()), func(m *Model) tea.Cmd {
+				if err := m.svc.RemoveTarget(t.ref); err != nil {
 					m.notice = err.Error()
 				}
-				delete(m.states, t.Name)
+				delete(m.states, t.ref.String())
 				if m.cursor >= len(m.targets()) && m.cursor > 0 {
 					m.cursor--
 				}
@@ -264,9 +321,9 @@ func (m *Model) viewMigrations() string {
 	if !ok {
 		return m.viewTargets()
 	}
-	st := m.state(t.Name)
+	st := m.state(t.ref)
 	var b strings.Builder
-	b.WriteString(m.header(fmt.Sprintf("%s (%s %s)", t.Name, t.Driver, targetLine(t))))
+	b.WriteString(m.header(fmt.Sprintf("%s (%s %s)", t.label(), t.Driver, targetLine(t.Target))))
 	b.WriteString(m.migrationTabs())
 	b.WriteRune('\n')
 
@@ -355,7 +412,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = scrTargets
 		return m, nil
 	}
-	st := m.state(t.Name)
+	st := m.state(t.ref)
 	switch key.String() {
 	case "left", "h", "right", "l":
 		m.mdebug = !m.mdebug
@@ -367,7 +424,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if t.Disabled {
 		switch key.String() {
 		case "N", "n", "b", "enter", " ", "B", "c", "r":
-			m.notice = t.Name + " is disabled; press t to enable it"
+			m.notice = t.label() + " is disabled; press t to enable it"
 			return m, nil
 		}
 	}
@@ -379,17 +436,15 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if m.mcur < len(st.items) {
 			it := &st.items[m.mcur]
-			if err := m.svc.SetMigrationEnabled(t.Name, it.Version, it.Disabled); err != nil {
+			if err := m.svc.SetMigrationEnabled(t.ref, it.Version, it.Disabled); err != nil {
 				m.notice = err.Error()
 				break
 			}
-			if nt, ok := m.svc.Target(t.Name); ok {
-				it.Disabled, it.Reason = m.svc.MigrationSetting(nt, it.Version)
-			}
+			it.Disabled, it.Reason = m.svc.MigrationSetting(t.ref, it.Version)
 			if it.Disabled {
-				m.notice = fmt.Sprintf("disabled %d_%s on %s; it will be skipped when applying", it.Version, it.Name, t.Name)
+				m.notice = fmt.Sprintf("disabled %d_%s on %s; it will be skipped when applying", it.Version, it.Name, t.label())
 			} else {
-				m.notice = fmt.Sprintf("enabled %d_%s on %s", it.Version, it.Name, t.Name)
+				m.notice = fmt.Sprintf("enabled %d_%s on %s", it.Version, it.Name, t.label())
 			}
 		}
 	case "up", "k":
@@ -405,7 +460,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		return m, m.run(t, domain.Up, 1)
 	case "b":
-		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.Name), func(m *Model) tea.Cmd {
+		return m, m.openConfirm(fmt.Sprintf("Roll back the last applied migration on %s?", t.label()), func(m *Model) tea.Cmd {
 			return m.run(t, domain.Down, 1)
 		})
 	case "B":
@@ -431,7 +486,7 @@ func (m *Model) updateMigrations(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // confirmRollbackBatch asks before rolling back every migration applied in the
 // same run as the most recently applied one.
-func (m *Model) confirmRollbackBatch(t domain.Target, st *targetState) tea.Cmd {
+func (m *Model) confirmRollbackBatch(t row, st *targetState) tea.Cmd {
 	batch := app.LatestBatch(st.items)
 	if len(batch) == 0 {
 		m.notice = "nothing to roll back"
@@ -447,13 +502,13 @@ func (m *Model) confirmRollbackBatch(t domain.Target, st *targetState) tea.Cmd {
 	for i, it := range batch {
 		names[i] = fmt.Sprintf("%d_%s", it.Version, it.Name)
 	}
-	q := fmt.Sprintf("Roll back the latest batch on %s (%d migration(s), newest first)?\n%s", t.Name, len(batch), strings.Join(names, "\n"))
+	q := fmt.Sprintf("Roll back the latest batch on %s (%d migration(s), newest first)?\n%s", t.label(), len(batch), strings.Join(names, "\n"))
 	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.downBatch(t) })
 }
 
 // confirmRedo checks the selected migration can be redone and asks first: it
 // runs the migration's Down and then its Up, which can destroy data.
-func (m *Model) confirmRedo(t domain.Target, st *targetState) tea.Cmd {
+func (m *Model) confirmRedo(t row, st *targetState) tea.Cmd {
 	if m.mcur >= len(st.items) {
 		return nil
 	}
@@ -473,7 +528,7 @@ func (m *Model) confirmRedo(t domain.Target, st *targetState) tea.Cmd {
 			later++
 		}
 	}
-	q := fmt.Sprintf("Redo %s on %s? This runs its Down, then its Up, and may destroy data.", label, t.Name)
+	q := fmt.Sprintf("Redo %s on %s? This runs its Down, then its Up, and may destroy data.", label, t.label())
 	if later > 0 {
 		q += fmt.Sprintf(" %d later applied migration(s) are left as they are and may depend on it.", later)
 	}
@@ -498,7 +553,7 @@ func blocked(it domain.Item, action string) string {
 // rolls back everything newer, so it becomes the latest applied migration.
 // Both ask for confirmation, since Enter is easy to press by accident and a
 // rollback can destroy data.
-func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
+func (m *Model) goTo(t row, st *targetState) tea.Cmd {
 	if m.mcur >= len(st.items) {
 		return nil
 	}
@@ -511,7 +566,7 @@ func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
 
 	if it.State == domain.Pending {
 		if it.Disabled {
-			m.notice = label + " is disabled on " + t.Name + "; press e to enable it"
+			m.notice = label + " is disabled on " + t.label() + "; press e to enable it"
 			return nil
 		}
 		pending := 0
@@ -520,7 +575,7 @@ func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
 				pending++
 			}
 		}
-		q := fmt.Sprintf("Apply %d pending migration(s) on %s up to and including %s?", pending, t.Name, label)
+		q := fmt.Sprintf("Apply %d pending migration(s) on %s up to and including %s?", pending, t.label(), label)
 		return m.openConfirm(q, func(m *Model) tea.Cmd { return m.upTo(t, it.Version) })
 	}
 
@@ -534,15 +589,15 @@ func (m *Model) goTo(t domain.Target, st *targetState) tea.Cmd {
 		m.notice = label + " is already the latest applied migration"
 		return nil
 	}
-	q := fmt.Sprintf("Roll back %d migration(s) on %s so %s is the latest applied? This runs their Down sections and may destroy data.", newer, t.Name, label)
+	q := fmt.Sprintf("Roll back %d migration(s) on %s so %s is the latest applied? This runs their Down sections and may destroy data.", newer, t.label(), label)
 	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.downTo(t, it.Version) })
 }
 
-func (m *Model) clearDirty(t domain.Target, version int64) tea.Cmd {
+func (m *Model) clearDirty(t row, version int64) tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		err := svc.ClearDirty(context.Background(), t.Name, version)
-		return clearedMsg{target: t.Name, err: err}
+		err := svc.ClearDirty(context.Background(), t.ref, version)
+		return clearedMsg{ref: t.ref, err: err}
 	}
 }
 
@@ -589,7 +644,7 @@ func firstLine(s string) string {
 
 // runOnly runs just the selected migration: a pending one is applied without
 // the older pending ones, an applied one is redone.
-func (m *Model) runOnly(t domain.Target, st *targetState) tea.Cmd {
+func (m *Model) runOnly(t row, st *targetState) tea.Cmd {
 	if m.mcur >= len(st.items) {
 		return nil
 	}
@@ -604,7 +659,7 @@ func (m *Model) runOnly(t domain.Target, st *targetState) tea.Cmd {
 			older++
 		}
 	}
-	q := fmt.Sprintf("Apply only %s on %s?", label, t.Name)
+	q := fmt.Sprintf("Apply only %s on %s?", label, t.label())
 	if older > 0 {
 		q += fmt.Sprintf(" %d older pending migration(s) are skipped and it may depend on them.", older)
 	}

@@ -29,7 +29,8 @@ type Target struct {
 	EnabledMigrations  []int64
 }
 
-// Project is the project-level configuration.
+// Project is the configuration in one .godwit directory: a plain project, the
+// root of a workspace, or one service of a workspace.
 type Project struct {
 	MigrationsDir string
 	Targets       []Target
@@ -37,7 +38,18 @@ type Project struct {
 	// DisabledMigrations is the default for every target: these versions are
 	// skipped while pending unless a target overrides it.
 	DisabledMigrations []int64
+
+	// Service names a service of a workspace; it is empty elsewhere. The
+	// service records its migrations in StateTable(Service).
+	Service string
+	// Services lists the service directories of a workspace, relative to its
+	// root and separated by "/". Only a workspace root has any; its Targets
+	// are global targets, usable by every service.
+	Services []string
 }
+
+// IsWorkspace reports whether p is the root of a workspace of services.
+func (p Project) IsWorkspace() bool { return len(p.Services) > 0 }
 
 // MigrationDisabled reports whether version is disabled on t, honouring the
 // target's override before the project default.

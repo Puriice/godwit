@@ -1,13 +1,15 @@
 // Package detach runs migrations in a worker process that survives the exit of
-// the program that started it. A run leaves two files in <root>/.godwit/runs:
-// <target>.pid (the worker's pid, then its job) and <target>.log (progress
-// lines, ended by a "-- finished" line).
+// the program that started it. A run leaves two files in <root>/.godwit/runs
+// (in runs/<service> for a service of a workspace): <target>.pid (the
+// worker's pid, then its job) and <target>.log (progress lines, ended by a
+// "-- finished" line).
 package detach
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,21 +63,31 @@ func New(root string) (*Runner, error) {
 	return &Runner{root: root, exe: exe}, nil
 }
 
-func (r *Runner) paths(target string) (pid, log string) {
+// paths returns a run's pid and log files: runs/<target>.* for a plain
+// project, runs/<service>/<target>.* for a service of a workspace, so that
+// services sharing a global target keep separate runs and queues on it.
+func (r *Runner) paths(ref domain.TargetRef) (pid, log string) {
 	dir := filepath.Join(r.root, ".godwit", "runs")
-	// Target names are user-chosen; keep the file name a single safe element.
-	name := strings.Map(func(c rune) rune {
+	if ref.Service != "" {
+		dir = filepath.Join(dir, safeName(ref.Service))
+	}
+	name := safeName(ref.Target)
+	return filepath.Join(dir, name+".pid"), filepath.Join(dir, name+".log")
+}
+
+// safeName keeps a user-chosen name a single safe file name element.
+func safeName(s string) string {
+	return strings.Map(func(c rune) rune {
 		if strings.ContainsRune(`\/:*?"<>|`, c) {
 			return '_'
 		}
 		return c
-	}, target)
-	return filepath.Join(dir, name+".pid"), filepath.Join(dir, name+".log")
+	}, s)
 }
 
 // LogPath is the file a target's run logs its progress to.
-func (r *Runner) LogPath(target string) string {
-	_, log := r.paths(target)
+func (r *Runner) LogPath(ref domain.TargetRef) string {
+	_, log := r.paths(ref)
 	return log
 }
 
@@ -104,15 +116,15 @@ func ensureRunsDir(dir string) error {
 	return nil
 }
 
-func (r *Runner) queueFile(target string) string {
-	pid, _ := r.paths(target)
+func (r *Runner) queueFile(ref domain.TargetRef) string {
+	pid, _ := r.paths(ref)
 	return strings.TrimSuffix(pid, ".pid") + ".queue"
 }
 
 // lock serialises changes to a target's queue and run files between this
 // program and its worker. The returned function releases it.
-func (r *Runner) lock(target string) (func(), error) {
-	pid, _ := r.paths(target)
+func (r *Runner) lock(ref domain.TargetRef) (func(), error) {
+	pid, _ := r.paths(ref)
 	file := strings.TrimSuffix(pid, ".pid") + ".lock"
 	if err := ensureRunsDir(filepath.Dir(file)); err != nil {
 		return nil, err
@@ -136,22 +148,22 @@ func (r *Runner) lock(target string) (func(), error) {
 }
 
 // readQueue lists the jobs waiting on target, oldest first.
-func (r *Runner) readQueue(target string) []domain.Job {
-	data, err := os.ReadFile(r.queueFile(target))
+func (r *Runner) readQueue(ref domain.TargetRef) []domain.Job {
+	data, err := os.ReadFile(r.queueFile(ref))
 	if err != nil {
 		return nil
 	}
 	var jobs []domain.Job
 	for line := range strings.SplitSeq(string(data), "\n") {
-		if j, err := domain.ParseJob(strings.Fields(line)); err == nil {
+		if j, err := decodeJob(line); err == nil {
 			jobs = append(jobs, j)
 		}
 	}
 	return jobs
 }
 
-func (r *Runner) writeQueue(target string, jobs []domain.Job) error {
-	file := r.queueFile(target)
+func (r *Runner) writeQueue(ref domain.TargetRef, jobs []domain.Job) error {
+	file := r.queueFile(ref)
 	if len(jobs) == 0 {
 		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
 			return err
@@ -160,68 +172,115 @@ func (r *Runner) writeQueue(target string, jobs []domain.Job) error {
 	}
 	var b strings.Builder
 	for _, j := range jobs {
-		b.WriteString(strings.Join(j.Args(), " "))
+		b.WriteString(encodeJob(j))
 		b.WriteByte('\n')
 	}
-	return os.WriteFile(file, []byte(b.String()), 0o644)
+	return writeAtomic(file, []byte(b.String()))
+}
+
+// encodeJob writes a job as one line of space-separated words for the run and
+// queue files. Each word is escaped, so a target name with spaces stays one
+// word.
+func encodeJob(j domain.Job) string {
+	args := j.Args()
+	for i, a := range args {
+		args[i] = url.PathEscape(a)
+	}
+	return strings.Join(args, " ")
+}
+
+// decodeJob reads a line written by encodeJob. Files written before names
+// were escaped hold them as they are; a word that is not valid escaping is
+// taken literally.
+func decodeJob(line string) (domain.Job, error) {
+	words := strings.Fields(line)
+	for i, w := range words {
+		if u, err := url.PathUnescape(w); err == nil {
+			words[i] = u
+		}
+	}
+	return domain.ParseJob(words)
+}
+
+// writeAtomic replaces file with data in one step, so a reader polling it
+// (the TUI, another godwit) never sees it empty or half written.
+func writeAtomic(file string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".tmp*")
+	if err != nil {
+		return err
+	}
+	_, werr := tmp.Write(data)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmp.Name(), 0o644)
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), file)
+	}
+	if werr != nil {
+		os.Remove(tmp.Name()) //nolint:errcheck // best effort
+	}
+	return werr
 }
 
 // Dequeue removes the job at position index of target's queue if it is still
 // j. The position matters: a queue may hold the same job more than once.
-func (r *Runner) Dequeue(target string, index int, j domain.Job) error {
-	unlock, err := r.lock(target)
+func (r *Runner) Dequeue(ref domain.TargetRef, index int, j domain.Job) error {
+	unlock, err := r.lock(ref)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	queue := r.readQueue(target)
+	queue := r.readQueue(ref)
 	if index < 0 || index >= len(queue) || queue[index] != j {
-		return fmt.Errorf("the queue of %s has changed (that job may have started); check it and try again", target)
+		return fmt.Errorf("the queue of %s has changed (that job may have started); check it and try again", ref)
 	}
-	return r.writeQueue(target, slices.Delete(queue, index, index+1))
+	return r.writeQueue(ref, slices.Delete(queue, index, index+1))
 }
 
 // ClearQueue removes every job queued on target and returns how many.
-func (r *Runner) ClearQueue(target string) (int, error) {
-	unlock, err := r.lock(target)
+func (r *Runner) ClearQueue(ref domain.TargetRef) (int, error) {
+	unlock, err := r.lock(ref)
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
-	n := len(r.readQueue(target))
-	return n, r.writeQueue(target, nil)
+	n := len(r.readQueue(ref))
+	return n, r.writeQueue(ref, nil)
 }
 
 // busy reports whether target has a live worker, even one that has already
 // logged its end and is about to exit or to hand over.
-func (r *Runner) busy(target string) bool {
-	st, _ := r.Poll(target, 0)
+func (r *Runner) busy(ref domain.TargetRef) bool {
+	st, _ := r.Poll(ref, 0)
 	return st.Pid != 0 && alive(st.Pid)
 }
 
 // Start launches a worker for j, which keeps running if this process exits.
 // While the target has a run, j is queued behind it instead.
 func (r *Runner) Start(j domain.Job) (bool, error) {
-	unlock, err := r.lock(j.Target)
+	unlock, err := r.lock(j.Ref())
 	if err != nil {
 		return false, err
 	}
 	defer unlock()
-	if r.busy(j.Target) {
-		if st, _ := r.Poll(j.Target, 0); st.Done && !st.More {
+	if r.busy(j.Ref()) {
+		if st, _ := r.Poll(j.Ref(), 0); st.Done && !st.More {
 			// The worker has decided there is nothing more to do and is on its
 			// way out; wait for it rather than queue behind nobody.
 			deadline := time.Now().Add(handoverWait)
-			for r.busy(j.Target) && time.Now().Before(deadline) {
+			for r.busy(j.Ref()) && time.Now().Before(deadline) {
 				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}
-	if r.busy(j.Target) {
-		queue := append(r.readQueue(j.Target), j)
-		return true, r.writeQueue(j.Target, queue)
+	if r.busy(j.Ref()) {
+		queue := append(r.readQueue(j.Ref()), j)
+		return true, r.writeQueue(j.Ref(), queue)
 	}
-	r.writeQueue(j.Target, nil) //nolint:errcheck // jobs queued behind a worker that died
+	r.writeQueue(j.Ref(), nil) //nolint:errcheck // jobs queued behind a worker that died
 	return false, r.spawn(j, false)
 }
 
@@ -229,7 +288,7 @@ func (r *Runner) Start(j domain.Job) (bool, error) {
 // previous worker, which is still alive: its record stays until the new one
 // replaces it, so the target never looks idle in between.
 func (r *Runner) spawn(j domain.Job, chained bool) error {
-	pidFile, logFile := r.paths(j.Target)
+	pidFile, logFile := r.paths(j.Ref())
 	if err := ensureRunsDir(filepath.Dir(pidFile)); err != nil {
 		return err
 	}
@@ -239,7 +298,7 @@ func (r *Runner) spawn(j domain.Job, chained bool) error {
 	if !chained {
 		os.Remove(pidFile) //nolint:errcheck // a stale record of the previous run
 	}
-	os.Remove(r.cancelFile(j.Target)) //nolint:errcheck // and its cancel request
+	os.Remove(r.cancelFile(j.Ref())) //nolint:errcheck // and its cancel request
 	// The worker is started by a short-lived launcher, not by this process.
 	// Once the launcher exits the worker has no live parent, so killing this
 	// process's tree (a closing terminal, taskkill /T) cannot reach it.
@@ -258,7 +317,7 @@ func (r *Runner) Launch(args []string) error {
 	if err != nil {
 		return err
 	}
-	pidFile, _ := r.paths(j.Target)
+	pidFile, _ := r.paths(j.Ref())
 	cmd := exec.Command(r.exe, append([]string{WorkerCommand}, j.Args()...)...)
 	cmd.Dir = r.root
 	if err := startDetached(cmd); err != nil {
@@ -266,13 +325,13 @@ func (r *Runner) Launch(args []string) error {
 	}
 	pid := cmd.Process.Pid
 	cmd.Process.Release() //nolint:errcheck // never waited on; it outlives us
-	content := strconv.Itoa(pid) + "\n" + strings.Join(j.Args(), " ") + "\n"
-	return os.WriteFile(pidFile, []byte(content), 0o644)
+	content := strconv.Itoa(pid) + "\n" + encodeJob(j) + "\n"
+	return writeAtomic(pidFile, []byte(content))
 }
 
 // Poll reads the log of target's latest run from byte offset from.
-func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
-	pidFile, logFile := r.paths(target)
+func (r *Runner) Poll(ref domain.TargetRef, from int64) (app.RunStatus, error) {
+	pidFile, logFile := r.paths(ref)
 	meta, err := os.ReadFile(pidFile)
 	if os.IsNotExist(err) {
 		return app.RunStatus{}, nil
@@ -280,17 +339,15 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	if err != nil {
 		return app.RunStatus{}, err
 	}
-	fields := strings.Fields(string(meta))
-	if len(fields) != 5 {
-		return app.RunStatus{}, fmt.Errorf("corrupt run file %s", pidFile)
-	}
-	pid, err := strconv.Atoi(fields[0])
+	// A pid line, then the job (see encodeJob).
+	pidLine, jobLine, _ := strings.Cut(string(meta), "\n")
+	pid, err := strconv.Atoi(strings.TrimSpace(pidLine))
 	if err != nil {
-		return app.RunStatus{}, fmt.Errorf("corrupt run file %s", pidFile)
+		return app.RunStatus{}, fmt.Errorf("corrupt run file %s: delete it if no run is going on that target", pidFile)
 	}
-	job, err := domain.ParseJob(fields[1:])
+	job, err := decodeJob(jobLine)
 	if err != nil {
-		return app.RunStatus{}, err
+		return app.RunStatus{}, fmt.Errorf("corrupt run file %s (%v): delete it if no run is going on that target", pidFile, err)
 	}
 	data, err := os.ReadFile(logFile)
 	if err != nil && !os.IsNotExist(err) {
@@ -299,7 +356,7 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	if from < 0 || from > int64(len(data)) {
 		from = 0
 	}
-	st := app.RunStatus{Job: job, Pid: pid, Next: from, Pending: r.readQueue(target)}
+	st := app.RunStatus{Job: job, Pid: pid, Next: from, Pending: r.readQueue(ref)}
 	data = data[from:]
 	if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
 		st.Next += int64(i + 1)
@@ -329,7 +386,7 @@ func (r *Runner) Poll(target string, from int64) (app.RunStatus, error) {
 	}
 	if !st.Done {
 		st.Active = alive(pid)
-		if _, err := os.Stat(r.cancelFile(target)); err == nil {
+		if _, err := os.Stat(r.cancelFile(ref)); err == nil {
 			st.Cancelling = st.Active
 		}
 	}
@@ -351,24 +408,24 @@ func parseFinished(s string) (count int, errMsg string, cancelled bool) {
 	return count, errMsg, word == "cancelled"
 }
 
-func (r *Runner) cancelFile(target string) string {
-	pid, _ := r.paths(target)
+func (r *Runner) cancelFile(ref domain.TargetRef) string {
+	pid, _ := r.paths(ref)
 	return strings.TrimSuffix(pid, ".pid") + ".cancel"
 }
 
 // Stop asks target's worker to cancel its run. The worker cancels the context
 // of the migration it is executing and records the run as cancelled, so a
 // statement in flight is aborted and no further migration starts.
-func (r *Runner) Stop(target string) error {
-	if st, _ := r.Poll(target, 0); !st.Active {
-		return fmt.Errorf("%s has no run in progress", target)
+func (r *Runner) Stop(ref domain.TargetRef) error {
+	if st, _ := r.Poll(ref, 0); !st.Active {
+		return fmt.Errorf("%s has no run in progress", ref)
 	}
-	return os.WriteFile(r.cancelFile(target), nil, 0o644)
+	return os.WriteFile(r.cancelFile(ref), nil, 0o644)
 }
 
 // watchCancel cancels ctx when target's cancel file appears.
-func (r *Runner) watchCancel(ctx context.Context, target string, cancel context.CancelFunc) {
-	file := r.cancelFile(target)
+func (r *Runner) watchCancel(ctx context.Context, ref domain.TargetRef, cancel context.CancelFunc) {
+	file := r.cancelFile(ref)
 	t := time.NewTicker(200 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -392,7 +449,7 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 	if err != nil {
 		return err
 	}
-	_, logFile := r.paths(job.Target)
+	_, logFile := r.paths(job.Ref())
 	f, err := os.OpenFile(logFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
@@ -401,22 +458,22 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 	prog := func(e domain.Event) { fmt.Fprintln(f, FormatEvent(e)) }
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go r.watchCancel(ctx, job.Target, cancel)
+	go r.watchCancel(ctx, job.Ref(), cancel)
 	n, runErr := run(ctx, job, prog)
 
 	// Deciding what follows and logging the end happen under the lock, so a
 	// Start that sees the run still going queues its job where this worker
 	// will find it.
-	unlock, lockErr := r.lock(job.Target)
+	unlock, lockErr := r.lock(job.Ref())
 	if lockErr != nil {
 		unlock = func() {}
 	}
 	var next *domain.Job
 	if runErr != nil {
 		// The jobs behind a failed or cancelled one may depend on it.
-		if dropped := len(r.readQueue(job.Target)); dropped > 0 {
+		if dropped := len(r.readQueue(job.Ref())); dropped > 0 {
 			fmt.Fprintf(f, "! %d queued job(s) dropped\n", dropped)
-			r.writeQueue(job.Target, nil) //nolint:errcheck // best effort
+			r.writeQueue(job.Ref(), nil) //nolint:errcheck // best effort
 		}
 		msg := strings.Join(strings.Fields(runErr.Error()), " ")
 		word := "failed"
@@ -427,9 +484,9 @@ func (r *Runner) RunWorker(ctx context.Context, args []string, run func(context.
 		unlock()
 		return runErr
 	}
-	if queue := r.readQueue(job.Target); len(queue) > 0 {
+	if queue := r.readQueue(job.Ref()); len(queue) > 0 {
 		next = &queue[0]
-		r.writeQueue(job.Target, queue[1:]) //nolint:errcheck // best effort
+		r.writeQueue(job.Ref(), queue[1:]) //nolint:errcheck // best effort
 		fmt.Fprintln(f, nextLine)
 	}
 	fmt.Fprintf(f, "%sok %d\n", finishedPrefix, n)

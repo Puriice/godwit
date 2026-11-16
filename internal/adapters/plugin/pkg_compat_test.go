@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -38,7 +39,13 @@ func (pkgDriver) ParseConnection(conn string) (godwit.Target, string, error) {
 }
 
 func (pkgDriver) Open(_ context.Context, t godwit.Target, password string) (godwit.Connection, error) {
-	if password != "secret" || t.Name != "tgt" || t.Database != "db" || t.Params["x"] != "y" {
+	if want := t.Params["table"]; want != "" && t.Table != want {
+		return nil, fmt.Errorf("table %q, want %q", t.Table, want)
+	}
+	if t.Params["table"] != "" {
+		return &pkgConn{}, nil
+	}
+	if password != "secret" || t.Name != "tgt" || t.Database != "db" || t.Params["x"] != "y" || t.Table != "godwit_migration" {
 		return nil, errors.New("target or password did not arrive intact")
 	}
 	return &pkgConn{}, nil
@@ -114,10 +121,10 @@ func TestPublicPackagePluginEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 	target := domain.Target{Name: "tgt", Driver: "pkgdb", Database: "db", Params: map[string]string{"x": "y"}}
-	if _, err := f.Open(ctx, domain.Target{Name: "tgt", Driver: "pkgdb"}, "secret"); err == nil {
+	if _, err := f.Open(ctx, domain.Target{Name: "tgt", Driver: "pkgdb"}, "secret", "godwit_migration"); err == nil {
 		t.Error("open must surface the driver's error")
 	}
-	db, err := f.Open(ctx, target, "secret")
+	db, err := f.Open(ctx, target, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +190,7 @@ func TestPublicPackagePluginTranslate(t *testing.T) {
 	}
 	f := New(t.TempDir(), []domain.PluginSpec{{Name: "pkgdb", Command: exe}})
 	ctx := context.Background()
-	db, err := f.Open(ctx, domain.Target{Name: "tgt", Driver: "pkgdb", Database: "db", Params: map[string]string{"x": "y"}}, "secret")
+	db, err := f.Open(ctx, domain.Target{Name: "tgt", Driver: "pkgdb", Database: "db", Params: map[string]string{"x": "y"}}, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,4 +215,19 @@ func TestPublicPackagePluginTranslate(t *testing.T) {
 	if _, _, err := imp.ForeignApplied(ctx, "flyway", "gv"); err == nil || !strings.Contains(err.Error(), "does not support") {
 		t.Errorf("an unadvertised tool must be refused before reaching the plugin: %v", err)
 	}
+}
+
+func TestPkgPluginReceivesStateTable(t *testing.T) {
+	t.Setenv(fakeEnv, "pkg")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := New(t.TempDir(), []domain.PluginSpec{{Name: "pkgdb", Command: exe}})
+	tg := domain.Target{Name: "tgt", Driver: "pkgdb", Params: map[string]string{"table": "godwit_migration_orders"}}
+	db, err := f.Open(context.Background(), tg, "secret", "godwit_migration_orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
 }

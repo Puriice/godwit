@@ -18,6 +18,8 @@ type ProjectStore interface {
 	Save(domain.Project) error
 	// Password resolves a target's password; ok is false if none is known.
 	Password(target string) (pw string, ok bool)
+	// PasswordKey is the environment variable that holds a target's password.
+	PasswordKey(target string) string
 	// SetPassword remembers a password. persist=false keeps it for this
 	// session only.
 	SetPassword(target, pw string, persist bool) error
@@ -25,8 +27,8 @@ type ProjectStore interface {
 	DeletePassword(target string) error
 }
 
-// MigrationSource reads and creates migration definitions. dir is the
-// project's configured migrations directory.
+// MigrationSource reads and creates migration definitions. dir is a
+// migrations directory, relative to the project (or workspace) root.
 type MigrationSource interface {
 	// Load fails on the first unreadable or invalid file.
 	Load(dir string) ([]*domain.Migration, error)
@@ -52,11 +54,13 @@ type MigrationSource interface {
 type DatabaseFactory interface {
 	// Drivers lists the supported driver names.
 	Drivers() []string
-	Open(ctx context.Context, t domain.Target, password string) (Database, error)
+	// Open connects to t. The connection records migrations in the state
+	// table named table (domain.StateTable of the service being migrated).
+	Open(ctx context.Context, t domain.Target, password, table string) (Database, error)
 }
 
-// Database is an open connection to one target. It owns the target's
-// godwit_migration state table.
+// Database is an open connection to one target. It owns the state table it
+// was opened with (godwit_migration, or godwit_migration_<service>).
 type Database interface {
 	Close() error
 	// EnsureTable creates the state table if it does not exist.

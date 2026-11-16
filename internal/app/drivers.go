@@ -39,11 +39,11 @@ func (c combined) Drivers() []string {
 	return names
 }
 
-func (c combined) Open(ctx context.Context, t domain.Target, password string) (Database, error) {
+func (c combined) Open(ctx context.Context, t domain.Target, password, table string) (Database, error) {
 	name := strings.ToLower(t.Driver)
 	for _, f := range c {
 		if slices.Contains(f.Drivers(), name) {
-			return f.Open(ctx, t, password)
+			return f.Open(ctx, t, password, table)
 		}
 	}
 	return nil, fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(c.Drivers(), ", "))
@@ -86,7 +86,9 @@ func (s *Service) ParseConnectionString(driver, conn string) (domain.Target, str
 //
 // Plugins are registered per project (.godwit/config.json) or globally for the
 // user (~/.godwit/config.json). Both lists are loaded at startup, and a project
-// entry replaces a global one with the same name.
+// entry replaces a global one with the same name. In a workspace the project
+// is the workspace root; plugins listed by a service's own config are loaded at
+// startup too, but are managed by editing that config.
 
 // SetGlobalStore enables global plugins, kept in store (the user's ~/.godwit).
 func (s *Service) SetGlobalStore(store ProjectStore) error {
@@ -111,7 +113,7 @@ func (s *Service) HasGlobal() bool {
 func (s *Service) Plugins() []domain.PluginSpec {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return slices.Clone(s.project.Plugins)
+	return slices.Clone(s.root.project.Plugins)
 }
 
 // GlobalPlugins returns the plugins registered for the user.
@@ -126,7 +128,7 @@ func (s *Service) GlobalPlugins() []domain.PluginSpec {
 func (s *Service) AddPlugin(p domain.PluginSpec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return addPlugin(&s.project, s.store, p)
+	return addPlugin(&s.root.project, s.root.store, p)
 }
 
 // AddGlobalPlugin registers a driver plugin for the user.
@@ -144,7 +146,7 @@ func (s *Service) AddGlobalPlugin(p domain.PluginSpec) error {
 func (s *Service) RemovePlugin(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return removePlugin(&s.project, s.store, name)
+	return removePlugin(&s.root.project, s.root.store, name)
 }
 
 // RemoveGlobalPlugin unregisters a driver plugin for the user.

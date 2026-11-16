@@ -5,6 +5,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/puriice/godwit/internal/domain"
 )
 
 func runMigrate(t *testing.T, args ...string) (string, error) {
@@ -53,7 +55,7 @@ func TestMigrateSkipsDisabledAndContinuesAfterFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := svc.SetTargetEnabled("b", false); err != nil {
+	if err := svc.SetTargetEnabled(domain.TargetRef{Target: "b"}, false); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

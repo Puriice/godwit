@@ -94,8 +94,8 @@ func probe(root string, spec domain.PluginSpec) (*driver, error) {
 		return nil, err
 	}
 	switch {
-	case hs.Protocol != ProtocolVersion:
-		return nil, fmt.Errorf("plugin %s speaks protocol %d; this godwit speaks %d", spec.Name, hs.Protocol, ProtocolVersion)
+	case hs.Protocol < minProtocol || hs.Protocol > ProtocolVersion:
+		return nil, fmt.Errorf("plugin %s speaks protocol %d; this godwit speaks %d to %d", spec.Name, hs.Protocol, minProtocol, ProtocolVersion)
 	case strings.TrimSpace(hs.Driver) == "":
 		return nil, fmt.Errorf("plugin %s did not name its driver", spec.Name)
 	}
@@ -144,18 +144,23 @@ func (f *Factory) DriverInfos() []domain.DriverInfo {
 	return out
 }
 
-// Open starts a dedicated plugin process for the target and connects it.
-func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (app.Database, error) {
+// Open starts a dedicated plugin process for the target and connects it. The
+// connection records migrations in table.
+func (f *Factory) Open(ctx context.Context, t domain.Target, password, table string) (app.Database, error) {
 	name := strings.ToLower(t.Driver)
 	d, ok := f.drivers[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(f.Drivers(), ", "))
 	}
+	if d.hs.Protocol < 2 && table != domain.DefaultStateTable {
+		return nil, fmt.Errorf("plugin %s speaks protocol %d, which always records migrations in %s; a workspace service needs %s. Rebuild the plugin against a newer pkg/godwit",
+			d.spec.Name, d.hs.Protocol, domain.DefaultStateTable, table)
+	}
 	c, err := start(d.spec.Name, d.path, d.spec.Args, f.root)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.call(ctx, "open", openParams{Target: toWire(t), Password: password}, nil); err != nil {
+	if err := c.call(ctx, "open", openParams{Target: toWire(t), Password: password, Table: table}, nil); err != nil {
 		c.close()
 		return nil, err
 	}

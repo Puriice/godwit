@@ -12,7 +12,9 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-const mysqlLockName = "godwit_migration_lock"
+// mysqlLockName returns the named lock guarding table: godwit_migration_lock
+// for the default table, as in older godwit versions.
+func mysqlLockName(table string) string { return table + "_lock" }
 
 func mysqlDSN(t domain.Target, password string) string {
 	port := t.Port
@@ -44,7 +46,8 @@ func openMySQL(ctx context.Context, t domain.Target, password string) (*conn, er
 		placeholder: func(int) string { return "?" },
 		// MySQL DDL auto-commits, so migrations rely on the dirty flag.
 		transactional: false,
-		createTable: `CREATE TABLE IF NOT EXISTS ` + Table + ` (
+		createTable: func(table string) string {
+			return `CREATE TABLE IF NOT EXISTS ` + table + ` (
 	version     BIGINT       NOT NULL PRIMARY KEY,
 	name        VARCHAR(255) NOT NULL,
 	checksum    CHAR(64)     NOT NULL,
@@ -52,18 +55,20 @@ func openMySQL(ctx context.Context, t domain.Target, password string) (*conn, er
 	duration_ms BIGINT       NOT NULL DEFAULT 0,
 	dirty       BOOLEAN      NOT NULL DEFAULT FALSE,
 	batch       BIGINT       NOT NULL DEFAULT 0
-)`,
-		lock: func(ctx context.Context, c *sql.Conn) (func() error, error) {
+)`
+		},
+		lock: func(ctx context.Context, c *sql.Conn, table string) (func() error, error) {
+			name := mysqlLockName(table)
 			var got sql.NullInt64
 			// Wait up to 30s for a concurrent run to finish.
-			if err := c.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", mysqlLockName).Scan(&got); err != nil {
+			if err := c.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", name).Scan(&got); err != nil {
 				return nil, err
 			}
 			if !got.Valid || got.Int64 != 1 {
 				return nil, fmt.Errorf("another godwit run holds the migration lock")
 			}
 			return func() error {
-				_, err := c.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", mysqlLockName)
+				_, err := c.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", name)
 				return err
 			}, nil
 		},

@@ -42,7 +42,8 @@ func openSQLite(ctx context.Context, t domain.Target, _ string) (*conn, error) {
 		name:          "sqlite",
 		placeholder:   func(int) string { return "?" },
 		transactional: true, // SQLite DDL is transactional
-		createTable: `CREATE TABLE IF NOT EXISTS ` + Table + ` (
+		createTable: func(table string) string {
+			return `CREATE TABLE IF NOT EXISTS ` + table + ` (
 	version     INTEGER   NOT NULL PRIMARY KEY,
 	name        TEXT      NOT NULL,
 	checksum    TEXT      NOT NULL,
@@ -50,10 +51,11 @@ func openSQLite(ctx context.Context, t domain.Target, _ string) (*conn, error) {
 	duration_ms INTEGER   NOT NULL DEFAULT 0,
 	dirty       BOOLEAN   NOT NULL DEFAULT FALSE,
 	batch       INTEGER   NOT NULL DEFAULT 0
-)`,
+)`
+		},
 		// SQLite has no advisory locks. The database file is already locked
 		// per write, and the version primary key rejects a duplicate apply.
-		lock: func(context.Context, *sql.Conn) (func() error, error) {
+		lock: func(context.Context, *sql.Conn, string) (func() error, error) {
 			return func() error { return nil }, nil
 		},
 	}}, nil

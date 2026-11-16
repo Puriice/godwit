@@ -13,7 +13,7 @@ func TestFactoryDriversAndUnknown(t *testing.T) {
 	if got := f.Drivers(); !slices.Equal(got, []string{"mysql", "postgres", "sqlite"}) {
 		t.Errorf("Drivers = %v", got)
 	}
-	if _, err := f.Open(context.Background(), domain.Target{Driver: "oracle"}, ""); err == nil {
+	if _, err := f.Open(context.Background(), domain.Target{Driver: "oracle"}, "", "godwit_migration"); err == nil {
 		t.Error("expected unknown driver error")
 	}
 }

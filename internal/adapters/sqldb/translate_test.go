@@ -67,12 +67,12 @@ func TestTranslateGooseEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddTarget(domain.Target{Name: "lite", Driver: "sqlite", Database: dbPath}, "", false); err != nil {
+	if err := svc.AddTarget("", domain.Target{Name: "lite", Driver: "sqlite", Database: dbPath}, "", false); err != nil {
 		t.Fatal(err)
 	}
 
 	// A dry run changes nothing.
-	files, err := svc.TranslateFiles("goose", true)
+	files, err := svc.TranslateFiles("", "goose", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestTranslateGooseEndToEnd(t *testing.T) {
 	if string(before) != gooseFile {
 		t.Fatalf("dry run rewrote the file:\n%s", before)
 	}
-	res, err := svc.TranslateState(ctx, "lite", "goose", "goose_db_version", files, true)
+	res, err := svc.TranslateState(ctx, domain.TargetRef{Target: "lite"}, "goose", "goose_db_version", files, true)
 	if err != nil || len(res.Imported) != 2 {
 		t.Fatalf("dry-run state = %+v, %v", res, err)
 	}
@@ -89,11 +89,11 @@ func TestTranslateGooseEndToEnd(t *testing.T) {
 	}
 
 	for run := 1; run <= 2; run++ {
-		files, err = svc.TranslateFiles("goose", false)
+		files, err = svc.TranslateFiles("", "goose", false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err = svc.TranslateState(ctx, "lite", "goose", "goose_db_version", files, false)
+		res, err = svc.TranslateState(ctx, domain.TargetRef{Target: "lite"}, "goose", "goose_db_version", files, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestTranslateGooseEndToEnd(t *testing.T) {
 	if n := rowCount(t, raw, "goose_db_version"); n != 6 {
 		t.Errorf("goose_db_version has %d rows, want 6", n)
 	}
-	items, err := svc.Status(ctx, "lite")
+	items, err := svc.Status(ctx, domain.TargetRef{Target: "lite"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func rowCount(t *testing.T, db *sql.DB, table string) int {
 func TestTranslateGooseNoTable(t *testing.T) {
 	ctx := context.Background()
 	tg := domain.Target{Name: "lite", Driver: "sqlite", Database: filepath.Join(t.TempDir(), "x.db")}
-	db, err := sqldb.NewFactory().Open(ctx, tg, "")
+	db, err := sqldb.NewFactory().Open(ctx, tg, "", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}

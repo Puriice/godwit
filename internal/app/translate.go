@@ -46,13 +46,17 @@ type TranslatedFile struct {
 	Err      error
 }
 
-// TranslateFiles adds the godwit directives to every migration file written for
-// tool, keeping the tool's own directives. With dryRun nothing is written.
-func (s *Service) TranslateFiles(tool string, dryRun bool) ([]TranslatedFile, error) {
+// TranslateFiles adds the godwit directives to every migration file of a
+// service written for tool, keeping the tool's own directives. With dryRun
+// nothing is written.
+func (s *Service) TranslateFiles(service, tool string, dryRun bool) ([]TranslatedFile, error) {
 	if tool != "goose" {
 		return nil, fmt.Errorf("%w %q (available: %s)", ErrUnknownTool, tool, strings.Join(TranslateTools(), ", "))
 	}
-	dir := s.MigrationsDir()
+	dir, err := s.migrationsPath(service)
+	if err != nil {
+		return nil, err
+	}
 	raw, err := s.source.Raw(dir)
 	if err != nil {
 		return nil, err
@@ -99,20 +103,20 @@ func (s *Service) TranslateFiles(tool string, dryRun bool) ([]TranslatedFile, er
 // StateTranslation is the outcome of importing one tool's history into a target.
 type StateTranslation struct {
 	NoTable   bool    // the tool's version table does not exist on the target
-	Imported  []int64 // versions recorded in godwit_migration
+	Imported  []int64 // versions recorded in the state table
 	Existing  []int64 // already recorded there
 	NoFile    []int64 // applied for the tool, but no usable migration file
 	Unapplied int     // versions the tool has rolled back or never applied
 }
 
-// TranslateState records the versions tool has applied on target in its
-// godwit_migration table, with the checksums of the translated files. The
+// TranslateState records the versions tool has applied on ref's target in the
+// service's state table, with the checksums of the translated files. The
 // tool's own table is only read. With dryRun nothing is written.
-func (s *Service) TranslateState(ctx context.Context, target, tool, table string, files []TranslatedFile, dryRun bool) (res StateTranslation, err error) {
+func (s *Service) TranslateState(ctx context.Context, ref domain.TargetRef, tool, table string, files []TranslatedFile, dryRun bool) (res StateTranslation, err error) {
 	if tool != "goose" {
 		return res, fmt.Errorf("%w %q", ErrUnknownTool, tool)
 	}
-	db, t, err := s.open(ctx, target)
+	db, t, err := s.open(ctx, ref)
 	if err != nil {
 		return res, err
 	}

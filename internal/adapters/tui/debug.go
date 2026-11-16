@@ -156,7 +156,7 @@ func (m *Model) debugDetail(st *targetState, width int) string {
 }
 
 // updateDebug handles keys while the debug panel is showing.
-func (m *Model) updateDebug(t domain.Target, st *targetState, key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateDebug(t row, st *targetState, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
 		m.screen = scrTargets
@@ -176,7 +176,7 @@ func (m *Model) updateDebug(t domain.Target, st *targetState, key tea.KeyMsg) (t
 		return m, m.confirmForce(t, st, domain.Applied)
 	case "r":
 		if t.Disabled {
-			m.notice = t.Name + " is disabled; press t on the migrations panel to enable it"
+			m.notice = t.label() + " is disabled; press t on the migrations panel to enable it"
 			break
 		}
 		m.reloadMigrations()
@@ -186,13 +186,13 @@ func (m *Model) updateDebug(t domain.Target, st *targetState, key tea.KeyMsg) (t
 }
 
 // confirmForce asks before forcing the selected migration into state to.
-func (m *Model) confirmForce(t domain.Target, st *targetState, to domain.State) tea.Cmd {
+func (m *Model) confirmForce(t row, st *targetState, to domain.State) tea.Cmd {
 	switch {
 	case t.Disabled:
-		m.notice = t.Name + " is disabled; enable it before forcing a state"
+		m.notice = t.label() + " is disabled; enable it before forcing a state"
 		return nil
 	case st.running:
-		m.notice = "a run is in progress on " + t.Name
+		m.notice = "a run is in progress on " + t.label()
 		return nil
 	case m.mcur >= len(st.items):
 		return nil
@@ -204,14 +204,14 @@ func (m *Model) confirmForce(t domain.Target, st *targetState, to domain.State) 
 		m.notice = fmt.Sprintf("%s is already recorded as %s", label, to)
 		return nil
 	}
-	q := fmt.Sprintf("Force %s on %s from %s to %s? Only the godwit_migration record changes; the schema is not touched.", label, t.Name, from, to)
+	q := fmt.Sprintf("Force %s on %s from %s to %s? Only the state table's record changes; the schema is not touched.", label, t.label(), from, to)
 	return m.openConfirm(q, func(m *Model) tea.Cmd { return m.forceState(t, it.Version, label, to) })
 }
 
-func (m *Model) forceState(t domain.Target, version int64, label string, to domain.State) tea.Cmd {
+func (m *Model) forceState(t row, version int64, label string, to domain.State) tea.Cmd {
 	svc := m.svc
 	return func() tea.Msg {
-		err := svc.ForceState(context.Background(), t.Name, version, to)
-		return forcedMsg{target: t.Name, label: label, to: to, err: err}
+		err := svc.ForceState(context.Background(), t.ref, version, to)
+		return forcedMsg{ref: t.ref, label: label, to: to, err: err}
 	}
 }

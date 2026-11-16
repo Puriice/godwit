@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -16,8 +17,13 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-// Table is the name of the state table created in every target.
-const Table = "godwit_migration"
+// Table is the default state table, used by plain projects. Each service of
+// a workspace has its own (see domain.StateTable).
+const Table = domain.DefaultStateTable
+
+// validTable matches the state table names Open accepts. Table names are
+// spliced into SQL, so anything else is refused.
+var validTable = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // opener opens a connection for one database engine.
 type opener func(ctx context.Context, t domain.Target, password string) (*conn, error)
@@ -49,8 +55,11 @@ func (f *Factory) Drivers() []string {
 }
 
 // Open connects to a target using the driver named by t.Driver
-// (case-insensitive).
-func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (app.Database, error) {
+// (case-insensitive). The connection records migrations in table.
+func (f *Factory) Open(ctx context.Context, t domain.Target, password, table string) (app.Database, error) {
+	if !validTable.MatchString(table) {
+		return nil, fmt.Errorf("invalid state table name %q", table)
+	}
 	open, ok := f.openers[strings.ToLower(t.Driver)]
 	if !ok {
 		return nil, fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(f.Drivers(), ", "))
@@ -59,6 +68,7 @@ func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (a
 	if err != nil {
 		return nil, err
 	}
+	c.table = table
 	return c, nil
 }
 
@@ -66,31 +76,32 @@ func (f *Factory) Open(ctx context.Context, t domain.Target, password string) (a
 type dialect struct {
 	name        string
 	placeholder func(n int) string // 1-based
-	createTable string
+	createTable func(table string) string
 	// transactional reports whether DDL can be rolled back, so a migration can
 	// be wrapped in a transaction instead of relying on the dirty flag.
 	transactional bool
-	lock          func(ctx context.Context, c *sql.Conn) (unlock func() error, err error)
+	lock          func(ctx context.Context, c *sql.Conn, table string) (unlock func() error, err error)
 }
 
 type conn struct {
-	db *sql.DB
-	d  dialect
+	db    *sql.DB
+	d     dialect
+	table string // the state table this connection records migrations in
 }
 
 func (c *conn) Close() error { return c.db.Close() }
 
 func (c *conn) EnsureTable(ctx context.Context) error {
-	if _, err := c.db.ExecContext(ctx, c.d.createTable); err != nil {
+	if _, err := c.db.ExecContext(ctx, c.d.createTable(c.table)); err != nil {
 		return err
 	}
 	// Tables created before batches existed lack the column; add it with 0
 	// ("unknown") for the old rows.
-	rows, err := c.db.QueryContext(ctx, "SELECT batch FROM "+Table+" WHERE 1 = 0")
+	rows, err := c.db.QueryContext(ctx, "SELECT batch FROM "+c.table+" WHERE 1 = 0")
 	if err == nil {
 		return rows.Close()
 	}
-	_, err = c.db.ExecContext(ctx, "ALTER TABLE "+Table+" ADD COLUMN batch BIGINT NOT NULL DEFAULT 0")
+	_, err = c.db.ExecContext(ctx, "ALTER TABLE "+c.table+" ADD COLUMN batch BIGINT NOT NULL DEFAULT 0")
 	return err
 }
 
@@ -100,7 +111,7 @@ func (c *conn) Lock(ctx context.Context) (func() error, error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := c.d.lock(ctx, sc)
+	unlock, err := c.d.lock(ctx, sc, c.table)
 	if err != nil {
 		sc.Close()
 		return nil, err
@@ -116,7 +127,7 @@ func (c *conn) Lock(ctx context.Context) (func() error, error) {
 
 func (c *conn) Applied(ctx context.Context) ([]domain.Record, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT version, name, checksum, applied_at, duration_ms, dirty, batch FROM "+Table+" ORDER BY version")
+		"SELECT version, name, checksum, applied_at, duration_ms, dirty, batch FROM "+c.table+" ORDER BY version")
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +151,7 @@ func (c *conn) insert(ctx context.Context, e execer, m *domain.Migration, dirty 
 	p := c.d.placeholder
 	_, err := e.ExecContext(ctx,
 		fmt.Sprintf("INSERT INTO %s (version, name, checksum, duration_ms, dirty, batch) VALUES (%s, %s, %s, %s, %s, %s)",
-			Table, p(1), p(2), p(3), p(4), p(5), p(6)),
+			c.table, p(1), p(2), p(3), p(4), p(5), p(6)),
 		m.Version, m.Name, m.Checksum, ms, dirty, m.Batch)
 	return err
 }
@@ -148,13 +159,13 @@ func (c *conn) insert(ctx context.Context, e execer, m *domain.Migration, dirty 
 func (c *conn) setDirty(ctx context.Context, e execer, version int64, dirty bool) error {
 	p := c.d.placeholder
 	_, err := e.ExecContext(ctx,
-		fmt.Sprintf("UPDATE %s SET dirty = %s WHERE version = %s", Table, p(1), p(2)), dirty, version)
+		fmt.Sprintf("UPDATE %s SET dirty = %s WHERE version = %s", c.table, p(1), p(2)), dirty, version)
 	return err
 }
 
 func (c *conn) remove(ctx context.Context, e execer, version int64) error {
 	_, err := e.ExecContext(ctx,
-		fmt.Sprintf("DELETE FROM %s WHERE version = %s", Table, c.d.placeholder(1)), version)
+		fmt.Sprintf("DELETE FROM %s WHERE version = %s", c.table, c.d.placeholder(1)), version)
 	return err
 }
 
@@ -336,7 +347,7 @@ func (c *conn) Apply(ctx context.Context, m *domain.Migration) error {
 	}
 	_, err := c.db.ExecContext(ctx,
 		fmt.Sprintf("UPDATE %s SET dirty = %s, duration_ms = %s WHERE version = %s",
-			Table, c.d.placeholder(1), c.d.placeholder(2), c.d.placeholder(3)),
+			c.table, c.d.placeholder(1), c.d.placeholder(2), c.d.placeholder(3)),
 		false, time.Since(start).Milliseconds(), m.Version)
 	return err
 }
@@ -387,7 +398,7 @@ func (c *conn) ForceState(ctx context.Context, m *domain.Migration, state domain
 
 	var n int
 	err = tx.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE version = %s", Table, c.d.placeholder(1)), m.Version).Scan(&n)
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE version = %s", c.table, c.d.placeholder(1)), m.Version).Scan(&n)
 	if err != nil {
 		return err
 	}

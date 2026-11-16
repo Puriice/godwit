@@ -14,11 +14,11 @@ import (
 )
 
 // ProcessUsage documents the process subcommands.
-const ProcessUsage = `usage: godwit process list [target...]
-       godwit process show <target> [-n LINES]
-       godwit process cancel <target>
-       godwit process dequeue <target> <position>
-       godwit process clear-queue <target>
+const ProcessUsage = `usage: godwit process list [-s SERVICE] [target...]
+       godwit process show [-s SERVICE] [-n LINES] <target>
+       godwit process cancel [-s SERVICE] <target>
+       godwit process dequeue [-s SERVICE] <target> <position>
+       godwit process clear-queue [-s SERVICE] <target>
 
   list         show each target's latest background run and the jobs queued behind it
   show         details of one target's run, its queue and the tail of its log
@@ -31,39 +31,50 @@ const ProcessUsage = `usage: godwit process list [target...]
 
 Runs are started with "godwit migrate up|down|redo --detach". Nothing is asked
 for confirmation. Without target names, every target with a run is listed.
-`
+In a workspace each service has its own runs and queue on a target.
+
+` + ServiceFlagUsage
 
 // Process runs "godwit process ...". args excludes the leading "process".
 func Process(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
 	if len(args) > 0 {
-		rest := args[1:]
+		var services serviceFlag
+		lines := 20
+		rest, err := parseCmdFlags("process "+args[0], ProcessUsage, args[1:], func(fs *flag.FlagSet) {
+			services.define(fs)
+			if args[0] == "show" {
+				fs.IntVar(&lines, "n", 20, "")
+			}
+		})
+		if err != nil {
+			return err
+		}
 		switch args[0] {
 		case "list":
-			return processList(svc, bg, rest, out)
+			return processList(svc, bg, services, rest, out)
 		case "show":
-			return processShow(svc, bg, rest, out)
+			return processShow(svc, bg, services, lines, rest, out)
 		case "cancel":
-			return processCancel(svc, bg, rest, out)
+			return processCancel(svc, bg, services, rest, out)
 		case "dequeue":
-			return processDequeue(svc, bg, rest, out)
+			return processDequeue(svc, bg, services, rest, out)
 		case "clear-queue":
-			return processClearQueue(svc, bg, rest, out)
+			return processClearQueue(svc, bg, services, rest, out)
 		}
 	}
 	return errors.New("unknown process command\n\n" + ProcessUsage)
 }
 
-func processTarget(svc *app.Service, bg app.BackgroundRunner, cmd string, args []string, want int) error {
+// processTarget checks a command's arguments and resolves the target its
+// first argument names.
+func processTarget(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, cmd string, args []string, want int) (domain.TargetRef, error) {
 	if len(args) != want {
-		return fmt.Errorf("process %s takes %d argument(s), got %d\n\n%s", cmd, want, len(args), ProcessUsage)
+		return domain.TargetRef{}, fmt.Errorf("process %s takes %d argument(s), got %d\n\n%s", cmd, want, len(args), ProcessUsage)
 	}
 	if bg == nil {
-		return errors.New("background runs are not available here")
+		return domain.TargetRef{}, errors.New("background runs are not available here")
 	}
-	if _, ok := svc.Target(args[0]); !ok {
-		return fmt.Errorf("no target named %q", args[0])
-	}
-	return nil
+	return selectRef(svc, services, args[0])
 }
 
 // jobLabel is a short description of a job: "up -n 2", "redo 7".
@@ -102,26 +113,30 @@ func runProgress(rs app.RunStatus) string {
 	return fmt.Sprintf("%d/%d", len(rs.Finished), len(rs.Queued))
 }
 
-func processList(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
+func processList(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, args []string, out io.Writer) error {
 	if bg == nil {
 		return errors.New("background runs are not available here")
 	}
-	var names []string
+	var refs []domain.TargetRef
 	if len(args) > 0 {
-		for _, n := range args {
-			if _, ok := svc.Target(n); !ok {
-				return fmt.Errorf("no target named %q", n)
-			}
+		var err error
+		if refs, err = selectRefs(svc, services, args); err != nil {
+			return err
 		}
-		names = args
 	} else {
-		for _, t := range svc.Targets() {
-			names = append(names, t.Name)
+		scs, err := scopes(svc, services)
+		if err != nil {
+			return err
+		}
+		for _, sc := range scs {
+			for _, t := range svc.ScopeTargets(sc) {
+				refs = append(refs, domain.TargetRef{Service: sc, Target: t.Name})
+			}
 		}
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	shown := 0
-	for _, n := range names {
+	for _, n := range refs {
 		rs, err := bg.Poll(n, 0)
 		if err != nil {
 			return fmt.Errorf("%s: %w", n, err)
@@ -142,21 +157,14 @@ func processList(svc *app.Service, bg app.BackgroundRunner, args []string, out i
 	return w.Flush()
 }
 
-func processShow(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	lines := fs.Int("n", 20, "")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("process show: %v\n\n%s", err, ProcessUsage)
+func processShow(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, lines int, args []string, out io.Writer) error {
+	if lines < 0 {
+		return fmt.Errorf("invalid -n %d", lines)
 	}
-	if *lines < 0 {
-		return fmt.Errorf("invalid -n %d", *lines)
-	}
-	rest := fs.Args()
-	if err := processTarget(svc, bg, "show", rest, 1); err != nil {
+	name, err := processTarget(svc, bg, services, "show", args, 1)
+	if err != nil {
 		return err
 	}
-	name := rest[0]
 	rs, err := bg.Poll(name, 0)
 	if err != nil {
 		return err
@@ -189,8 +197,8 @@ func processShow(svc *app.Service, bg app.BackgroundRunner, args []string, out i
 		}
 	}
 	log := rs.Lines
-	if *lines > 0 && len(log) > *lines {
-		log = log[len(log)-*lines:]
+	if lines > 0 && len(log) > lines {
+		log = log[len(log)-lines:]
 	}
 	if len(log) > 0 {
 		fmt.Fprintln(out, "\nlog:")
@@ -206,63 +214,66 @@ func firstLine(s string) string {
 	return line
 }
 
-func processCancel(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
-	if err := processTarget(svc, bg, "cancel", args, 1); err != nil {
+func processCancel(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, args []string, out io.Writer) error {
+	ref, err := processTarget(svc, bg, services, "cancel", args, 1)
+	if err != nil {
 		return err
 	}
-	rs, err := bg.Poll(args[0], 0)
+	rs, err := bg.Poll(ref, 0)
 	if err != nil {
 		return err
 	}
 	switch {
 	case !rs.Active:
-		return fmt.Errorf("%s has no run in progress", args[0])
+		return fmt.Errorf("%s has no run in progress", ref)
 	case rs.Cancelling:
-		fmt.Fprintf(out, "Already cancelling the run on %s.\n", args[0])
+		fmt.Fprintf(out, "Already cancelling the run on %s.\n", ref)
 		return nil
 	}
-	if err := bg.Stop(args[0]); err != nil {
+	if err := bg.Stop(ref); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Cancel requested for the %s run on %s. Check it with: godwit process show %s\n", rs.Job.Op, args[0], args[0])
+	fmt.Fprintf(out, "Cancel requested for the %s run on %s. Check it with: godwit process show %s\n", rs.Job.Op, ref, ref)
 	return nil
 }
 
-func processDequeue(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
-	if err := processTarget(svc, bg, "dequeue", args, 2); err != nil {
+func processDequeue(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, args []string, out io.Writer) error {
+	ref, err := processTarget(svc, bg, services, "dequeue", args, 2)
+	if err != nil {
 		return err
 	}
 	pos, err := strconv.Atoi(args[1])
 	if err != nil || pos < 1 {
 		return fmt.Errorf("invalid position %q; use the number \"process show\" prints", args[1])
 	}
-	rs, err := bg.Poll(args[0], 0)
+	rs, err := bg.Poll(ref, 0)
 	if err != nil {
 		return err
 	}
 	if pos > len(rs.Pending) {
-		return fmt.Errorf("%s has %d queued job(s); there is no position %d", args[0], len(rs.Pending), pos)
+		return fmt.Errorf("%s has %d queued job(s); there is no position %d", ref, len(rs.Pending), pos)
 	}
 	job := rs.Pending[pos-1]
-	if err := bg.Dequeue(args[0], pos-1, job); err != nil {
+	if err := bg.Dequeue(ref, pos-1, job); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Removed %s from the queue of %s.\n", jobLabel(job), args[0])
+	fmt.Fprintf(out, "Removed %s from the queue of %s.\n", jobLabel(job), ref)
 	return nil
 }
 
-func processClearQueue(svc *app.Service, bg app.BackgroundRunner, args []string, out io.Writer) error {
-	if err := processTarget(svc, bg, "clear-queue", args, 1); err != nil {
+func processClearQueue(svc *app.Service, bg app.BackgroundRunner, services serviceFlag, args []string, out io.Writer) error {
+	ref, err := processTarget(svc, bg, services, "clear-queue", args, 1)
+	if err != nil {
 		return err
 	}
-	n, err := bg.ClearQueue(args[0])
+	n, err := bg.ClearQueue(ref)
 	if err != nil {
 		return err
 	}
 	if n == 0 {
-		fmt.Fprintf(out, "Nothing is queued on %s.\n", args[0])
+		fmt.Fprintf(out, "Nothing is queued on %s.\n", ref)
 		return nil
 	}
-	fmt.Fprintf(out, "Removed %d queued job(s) from %s. The run in progress is not affected.\n", n, args[0])
+	fmt.Fprintf(out, "Removed %d queued job(s) from %s. The run in progress is not affected.\n", n, ref)
 	return nil
 }

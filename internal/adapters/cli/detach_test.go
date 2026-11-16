@@ -19,11 +19,13 @@ func (f *fakeRunner) Start(j domain.Job) (bool, error) {
 	f.started = append(f.started, j)
 	return f.queued, nil
 }
-func (f *fakeRunner) LogPath(t string) string               { return "runs/" + t + ".log" }
-func (f *fakeRunner) Stop(string) error                     { return nil }
-func (f *fakeRunner) Dequeue(string, int, domain.Job) error { return nil }
-func (f *fakeRunner) ClearQueue(string) (int, error)        { return 0, nil }
-func (f *fakeRunner) Poll(string, int64) (app.RunStatus, error) {
+func (f *fakeRunner) LogPath(r domain.TargetRef) string { return "runs/" + r.String() + ".log" }
+func (f *fakeRunner) Stop(domain.TargetRef) error       { return nil }
+func (f *fakeRunner) Dequeue(domain.TargetRef, int, domain.Job) error {
+	return nil
+}
+func (f *fakeRunner) ClearQueue(domain.TargetRef) (int, error) { return 0, nil }
+func (f *fakeRunner) Poll(domain.TargetRef, int64) (app.RunStatus, error) {
 	return app.RunStatus{}, nil
 }
 

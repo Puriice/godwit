@@ -35,8 +35,9 @@ import (
 )
 
 // ProtocolVersion is the wire protocol version this package speaks. godwit
-// rejects plugins whose version differs from its own.
-const ProtocolVersion = 1
+// rejects plugins whose version it does not know. Version 2 sends the state
+// table name on open (Target.Table).
+const ProtocolVersion = 2
 
 // Info describes the driver to godwit. It is sent in the handshake.
 type Info struct {
@@ -65,9 +66,14 @@ type Target struct {
 	Database string
 	User     string
 	Params   map[string]string
+	// Table is the state table the connection owns: godwit_migration for a
+	// plain project, godwit_migration_<service> for a service of a workspace,
+	// so that services sharing one database keep separate histories. It is set
+	// on Open only. Use it wherever the table is named, including the lock.
+	Table string
 }
 
-// Record is one row of the godwit_migration state table.
+// Record is one row of a state table (see Target.Table).
 type Record struct {
 	Version    int64
 	Name       string
@@ -137,8 +143,9 @@ type Driver interface {
 	Open(ctx context.Context, t Target, password string) (Connection, error)
 }
 
-// Connection is an open database. It owns the target's godwit_migration state
-// table, with these columns (adapt the types to your database):
+// Connection is an open database. It owns the state table named by the
+// Target.Table it was opened with, with these columns (adapt the types to your
+// database):
 //
 //	version      integer primary key
 //	name         text
@@ -154,9 +161,10 @@ type Connection interface {
 	// EnsureTable creates the state table if it does not exist.
 	EnsureTable(ctx context.Context) error
 
-	// Lock takes a database-wide migration lock so two godwit runs cannot
-	// migrate the same database at once, and returns the function that releases
-	// it. It should fail rather than wait forever. Databases without locking
+	// Lock takes a migration lock for the state table so two godwit runs cannot
+	// migrate it at once, and returns the function that releases it. Derive the
+	// lock from Target.Table, so services sharing a database do not block
+	// each other. It should fail rather than wait forever. Databases without locking
 	// may return a no-op.
 	Lock(ctx context.Context) (unlock func() error, err error)
 

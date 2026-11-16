@@ -29,7 +29,7 @@ func arrow(s string) tea.KeyMsg {
 func debugModel(t *testing.T, items ...domain.Item) (*Model, *targetState) {
 	t.Helper()
 	m := testModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	st.loaded, st.items = true, items
 	m.Update(key("enter"))
 	if m.screen != scrMigrations {
@@ -134,7 +134,7 @@ func TestDebugForceRefusedWhileBusyOrDisabled(t *testing.T) {
 	}
 	st.running = false
 
-	m.svc.SetTargetEnabled("a", false)
+	m.svc.SetTargetEnabled(ref("a"), false)
 	st.loaded, st.items = true, []domain.Item{item(1, "x", domain.Pending, nil)}
 	m.Update(key("a"))
 	if m.screen == scrForm || !strings.Contains(m.notice, "disabled") {
@@ -144,11 +144,11 @@ func TestDebugForceRefusedWhileBusyOrDisabled(t *testing.T) {
 
 func TestForcedMsg(t *testing.T) {
 	m, st := debugModel(t, item(1, "x", domain.Pending, nil))
-	m.Update(forcedMsg{target: "a", label: "1_x", to: domain.Applied, err: errors.New("boom")})
+	m.Update(forcedMsg{ref: ref("a"), label: "1_x", to: domain.Applied, err: errors.New("boom")})
 	if !strings.Contains(m.notice, "boom") || len(st.log) == 0 || !strings.Contains(st.log[len(st.log)-1], "boom") {
 		t.Errorf("error not reported: notice=%q log=%v", m.notice, st.log)
 	}
-	_, cmd := m.Update(forcedMsg{target: "a", label: "1_x", to: domain.Applied})
+	_, cmd := m.Update(forcedMsg{ref: ref("a"), label: "1_x", to: domain.Applied})
 	if cmd == nil || !strings.Contains(st.log[len(st.log)-1], "forced 1_x to applied") {
 		t.Errorf("success: cmd=%v log=%v", cmd, st.log)
 	}
@@ -162,23 +162,23 @@ func TestDebugForceEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.EnsureMigrationsDir(); err != nil {
+	if err := svc.EnsureMigrationsDir(""); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(root, svc.MigrationsDir(), "1_one.sql")
+	file := filepath.Join(root, svc.MigrationsDir(""), "1_one.sql")
 	if err := os.WriteFile(file, []byte("-- +godwit Up\nCREATE TABLE one (id INTEGER);\n-- +godwit Down\nDROP TABLE one;\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddTarget(domain.Target{Name: "l", Driver: "sqlite", Database: filepath.Join(root, "l.db")}, "", false); err != nil {
+	if err := svc.AddTarget("", domain.Target{Name: "l", Driver: "sqlite", Database: filepath.Join(root, "l.db")}, "", false); err != nil {
 		t.Fatal(err)
 	}
 
 	m := New(svc)
-	tg, _ := svc.Target("l")
+	tg, _ := m.row(ref("l"))
 	ctx := context.Background()
 	status := func() domain.State {
 		t.Helper()
-		items, err := svc.Status(ctx, "l")
+		items, err := svc.Status(ctx, ref("l"))
 		if err != nil || len(items) != 1 {
 			t.Fatalf("status: %v %v", items, err)
 		}
@@ -203,11 +203,11 @@ func TestDebugForceEndToEnd(t *testing.T) {
 		}
 	}
 	// The schema was never touched: the table the migration creates still doesn't exist.
-	if _, err := svc.Up(ctx, "l", 0, nil); err == nil {
+	if _, err := svc.Up(ctx, ref("l"), 0, nil); err == nil {
 		t.Error("a dirty migration should block a run")
 	}
 	force(domain.Pending)
-	if n, err := svc.Up(ctx, "l", 0, nil); err != nil || n != 1 {
+	if n, err := svc.Up(ctx, ref("l"), 0, nil); err != nil || n != 1 {
 		t.Errorf("after forcing pending the migration should apply: n=%d err=%v", n, err)
 	}
 }

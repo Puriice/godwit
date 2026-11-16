@@ -28,7 +28,7 @@ func TestForceState(t *testing.T) {
 	h.db.recs[1] = &domain.Record{Version: 1, Name: "a", Checksum: "a", Batch: 4}
 
 	status := func() []domain.State {
-		items, err := h.svc.Status(ctx, "t")
+		items, err := h.svc.Status(ctx, ref("t"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -36,7 +36,7 @@ func TestForceState(t *testing.T) {
 	}
 	force := func(v int64, to domain.State) {
 		t.Helper()
-		if err := h.svc.ForceState(ctx, "t", v, to); err != nil {
+		if err := h.svc.ForceState(ctx, ref("t"), v, to); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,7 +69,7 @@ func TestForceState(t *testing.T) {
 func TestForceStateKeepsRecordForMissingFile(t *testing.T) {
 	h := newHarness(t, mig(1, "a"))
 	h.db.recs[9] = &domain.Record{Version: 9, Name: "gone", Checksum: "old", Batch: 2}
-	if err := h.svc.ForceState(context.Background(), "t", 9, domain.Dirty); err != nil {
+	if err := h.svc.ForceState(context.Background(), ref("t"), 9, domain.Dirty); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.db.forced[0]; got.Name != "gone" || got.Checksum != "old" || got.Batch != 2 {
@@ -80,11 +80,11 @@ func TestForceStateKeepsRecordForMissingFile(t *testing.T) {
 func TestForceStateErrors(t *testing.T) {
 	h := newHarness(t, mig(1, "a"))
 	ctx := context.Background()
-	if err := h.svc.ForceState(ctx, "t", 7, domain.Applied); err == nil || !strings.Contains(err.Error(), "no migration") {
+	if err := h.svc.ForceState(ctx, ref("t"), 7, domain.Applied); err == nil || !strings.Contains(err.Error(), "no migration") {
 		t.Errorf("unknown version: %v", err)
 	}
 	for _, bad := range []domain.State{domain.Modified, domain.Missing, "bogus"} {
-		if err := h.svc.ForceState(ctx, "t", 1, bad); err == nil {
+		if err := h.svc.ForceState(ctx, ref("t"), 1, bad); err == nil {
 			t.Errorf("state %q should be refused", bad)
 		}
 	}
@@ -97,7 +97,7 @@ func TestForceStateErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plain.ForceState(ctx, "t", 1, domain.Applied); err == nil || !strings.Contains(err.Error(), "cannot force") {
+	if err := plain.ForceState(ctx, ref("t"), 1, domain.Applied); err == nil || !strings.Contains(err.Error(), "cannot force") {
 		t.Errorf("plain database: %v", err)
 	}
 }
@@ -108,6 +108,6 @@ type plainFactory struct{ db *fakeDB }
 type plainDB struct{ Database }
 
 func (plainFactory) Drivers() []string { return []string{"mysql", "postgres"} }
-func (f plainFactory) Open(context.Context, domain.Target, string) (Database, error) {
+func (f plainFactory) Open(context.Context, domain.Target, string, string) (Database, error) {
 	return plainDB{f.db}, nil
 }

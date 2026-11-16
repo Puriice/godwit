@@ -19,7 +19,7 @@ func openLite(t *testing.T) (app.Database, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "app.db")
-	db, err := sqldb.NewFactory().Open(ctx, domain.Target{Name: "lite", Driver: "sqlite", Database: path}, "")
+	db, err := sqldb.NewFactory().Open(ctx, domain.Target{Name: "lite", Driver: "sqlite", Database: path}, "", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}

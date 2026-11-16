@@ -19,14 +19,17 @@ type procRunner struct {
 	clearedOf string
 }
 
-func (p *procRunner) Poll(string, int64) (app.RunStatus, error) { return p.status, nil }
-func (p *procRunner) Stop(t string) error                       { p.stopped = append(p.stopped, t); return nil }
-func (p *procRunner) Dequeue(_ string, i int, _ domain.Job) error {
+func (p *procRunner) Poll(domain.TargetRef, int64) (app.RunStatus, error) { return p.status, nil }
+func (p *procRunner) Stop(t domain.TargetRef) error {
+	p.stopped = append(p.stopped, t.String())
+	return nil
+}
+func (p *procRunner) Dequeue(_ domain.TargetRef, i int, _ domain.Job) error {
 	p.dequeued = append(p.dequeued, i)
 	return nil
 }
-func (p *procRunner) ClearQueue(t string) (int, error) {
-	p.clearedOf = t
+func (p *procRunner) ClearQueue(t domain.TargetRef) (int, error) {
+	p.clearedOf = t.String()
 	return len(p.status.Pending), nil
 }
 

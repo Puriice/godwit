@@ -89,21 +89,21 @@ func (m *Model) viewForm() string {
 }
 
 // openCredentialForm asks for a target's password.
-func (m *Model) openCredentialForm(t domain.Target) tea.Cmd {
+func (m *Model) openCredentialForm(t row) tea.Cmd {
 	var (
 		pw      string
 		persist = true
 	)
 	f := huh.NewForm(huh.NewGroup(
 		huh.NewInput().
-			Title(fmt.Sprintf("Password for %s", t.Name)).
-			Description(fmt.Sprintf("%s://%s@%s/%s", t.Driver, t.User, t.Host, t.Database)).
+			Title(fmt.Sprintf("Password for %s", t.label())).
+			Description(fmt.Sprintf("%s://%s@%s/%s · or set %s", t.Driver, t.User, t.Host, t.Database, m.svc.PasswordKey(t.ref))).
 			EchoMode(huh.EchoModePassword).
 			Value(&pw),
 		huh.NewConfirm().Title("Save to .godwit/.env?").Affirmative("Yes").Negative("This session only").Value(&persist),
 	))
 	return m.openForm("Credentials", f, func(m *Model) tea.Cmd {
-		if err := m.svc.SetPassword(t.Name, pw, persist); err != nil {
+		if err := m.svc.SetPassword(t.ref, pw, persist); err != nil {
 			m.notice = "saving password: " + err.Error()
 		}
 		if next := m.nextCredentialForm(); next != nil {
@@ -113,34 +113,84 @@ func (m *Model) openCredentialForm(t domain.Target) tea.Cmd {
 	})
 }
 
-// openTargetForm adds a target, or edits existing when non-nil.
-func (m *Model) openTargetForm(existing *domain.Target) tea.Cmd {
-	in := newTargetInput(m.svc.Drivers(), existing)
+// globalScope is the scope option for a workspace's global targets.
+const globalScope = ""
+
+// openTargetForm adds a target, or edits existing when non-nil. In a
+// workspace, a new target is added to a service or as a global target, as the
+// form's Scope field says.
+func (m *Model) openTargetForm(existing *row) tea.Cmd {
+	var base *domain.Target
+	if existing != nil {
+		base = &existing.Target
+	}
+	in := newTargetInput(m.svc.Drivers(), base)
 	in.noHost = m.svc.DriverNoHost
 	title := "Add target"
-	if existing != nil {
-		title = "Edit target " + existing.Name
+	scope := m.svc.CurrentService()
+	if cur, ok := m.currentTarget(); ok {
+		scope = cur.ref.Service
 	}
-	nameTaken := func(name string) bool { _, ok := m.svc.Target(name); return ok }
+	if existing != nil {
+		title = "Edit target " + existing.label()
+		if m.svc.IsGlobal(existing.ref) {
+			title += " (global: changes apply to every service)"
+		}
+	}
+	// A name is taken when the scope itself defines it; a service may shadow
+	// a global target.
+	nameTaken := func(name string) bool {
+		r := domain.TargetRef{Service: scope, Target: name}
+		_, ok := m.svc.Target(r)
+		return ok && (scope == globalScope || !m.svc.IsGlobal(r))
+	}
 	fields := in.fields(m.svc.Drivers(), nameTaken, existing != nil)
+	if existing == nil && m.svc.IsWorkspace() {
+		opts := []huh.Option[string]{huh.NewOption("global (every service)", globalScope)}
+		for _, s := range m.svc.DefaultServices() {
+			opts = append(opts, huh.NewOption("service "+s, s))
+		}
+		fields = append([]huh.Field{huh.NewSelect[string]().Title("Scope").Options(opts...).Value(&scope)}, fields...)
+	}
 	return m.openForm(title, huh.NewForm(huh.NewGroup(fields...)), func(m *Model) tea.Cmd {
 		t := in.target()
 		var err error
+		var ref domain.TargetRef
 		if existing == nil {
-			err = m.svc.AddTarget(t, in.pw, in.persist)
+			ref = domain.TargetRef{Service: scope, Target: t.Name}
+			err = m.svc.AddTarget(scope, t, in.pw, in.persist)
 		} else {
-			err = m.svc.UpdateTarget(t, in.pw, in.persist)
+			ref = existing.ref
+			err = m.svc.UpdateTarget(ref, t, in.pw, in.persist)
 		}
 		if err != nil {
 			m.notice = "saving target: " + err.Error()
 			return nil
 		}
-		if existing == nil {
-			m.cursor = len(m.targets()) - 1
-		}
-		m.state(t.Name) // ensure state exists
-		return m.refresh(t)
+		return m.refreshDefinition(ref, existing == nil)
 	})
+}
+
+// refreshDefinition reloads every row that shows the target ref defines: one
+// row, or for a global target one per service. With moveCursor the cursor
+// goes to the first of them.
+func (m *Model) refreshDefinition(ref domain.TargetRef, moveCursor bool) tea.Cmd {
+	global := m.svc.IsWorkspace() && (ref.Service == globalScope || m.svc.IsGlobal(ref))
+	var cmds []tea.Cmd
+	first := true
+	for i, r := range m.targets() {
+		same := r.ref == ref || (global && r.ref.Target == ref.Target && m.svc.IsGlobal(r.ref))
+		if !same {
+			continue
+		}
+		if moveCursor && first {
+			m.cursor = i
+		}
+		first = false
+		m.state(r.ref) // ensure state exists
+		cmds = append(cmds, m.refresh(r))
+	}
+	return tea.Batch(cmds...)
 }
 
 // targetInput is the editable state behind the add/edit target form. It is
@@ -246,14 +296,23 @@ func (m *Model) openConfirm(title string, onYes func(m *Model) tea.Cmd) tea.Cmd 
 	})
 }
 
-// openNewMigrationForm scaffolds a migration file.
-func (m *Model) openNewMigrationForm() tea.Cmd {
+// openNewMigrationForm scaffolds a migration file, in service by default. In a
+// workspace with several services the form asks which one.
+func (m *Model) openNewMigrationForm(service string) tea.Cmd {
 	var name string
-	f := huh.NewForm(huh.NewGroup(
+	fields := []huh.Field{
 		huh.NewInput().Title("Migration name").Description("letters, digits, _ and -").Value(&name).Validate(required),
-	))
+	}
+	if svcs := m.svc.DefaultServices(); len(svcs) > 1 {
+		var opts []huh.Option[string]
+		for _, s := range svcs {
+			opts = append(opts, huh.NewOption(s, s))
+		}
+		fields = append([]huh.Field{huh.NewSelect[string]().Title("Service").Options(opts...).Value(&service)}, fields...)
+	}
+	f := huh.NewForm(huh.NewGroup(fields...))
 	return m.openForm("New migration", f, func(m *Model) tea.Cmd {
-		path, err := m.svc.CreateMigration(name)
+		path, err := m.svc.CreateMigration(service, name)
 		if err != nil {
 			m.notice = err.Error()
 			return nil

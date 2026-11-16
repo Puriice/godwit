@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -27,16 +28,50 @@ func (p Progress) emit(e domain.Event) {
 	}
 }
 
+// scope is one .godwit configuration: a plain project, the root of a
+// workspace (whose targets are global) or one service of a workspace.
+type scope struct {
+	name    string // service name; "" for a plain project or a workspace root
+	dir     string // service directory relative to the workspace root ("/" separated); "" for the root
+	store   ProjectStore
+	project domain.Project
+}
+
+// table is the state table this scope's migrations are recorded in.
+func (sc *scope) table() string { return domain.StateTable(sc.name) }
+
+// migrationsPath is the scope's migrations directory relative to the
+// workspace root (or absolute), as the MigrationSource expects it.
+func (sc *scope) migrationsPath() string {
+	dir := sc.project.MigrationsDir
+	if sc.dir == "" || filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(filepath.FromSlash(sc.dir), dir)
+}
+
+// target returns the index of the named target in the scope, or -1.
+func (sc *scope) target(name string) int {
+	return slices.IndexFunc(sc.project.Targets, func(t domain.Target) bool { return t.Name == name })
+}
+
 // Service implements godwit's use cases. It is safe for concurrent use.
+//
+// A Service drives a plain project, or a workspace of services: the root
+// keeps the global targets, and each service its own targets and migrations.
+// Targets are addressed with domain.TargetRef: the service gives the
+// migrations and state table, and the target is the service's own or, when it
+// has none of that name, a global one.
 type Service struct {
-	store  ProjectStore
 	source MigrationSource
 	dbs    DatabaseFactory
 
 	drivers *domain.Registry
 
-	mu      sync.RWMutex
-	project domain.Project
+	mu       sync.RWMutex
+	root     scope    // the plain project, or the workspace root
+	services []*scope // a workspace's services, in the root's order
+	current  string   // the service the user works in; "" for all of them
 
 	// globalStore keeps user-wide settings (driver plugins) in ~/.godwit. It is
 	// nil when there is no home directory.
@@ -44,7 +79,8 @@ type Service struct {
 	global      domain.Project
 }
 
-// New loads the project from store and returns a Service.
+// New loads the project (or workspace root) from store and returns a Service.
+// The services of a workspace are added with LoadService.
 func New(store ProjectStore, source MigrationSource, dbs DatabaseFactory) (*Service, error) {
 	p, err := store.Load()
 	if err != nil {
@@ -53,7 +89,228 @@ func New(store ProjectStore, source MigrationSource, dbs DatabaseFactory) (*Serv
 	if p.MigrationsDir == "" {
 		p.MigrationsDir = defaultMigrationsDir
 	}
-	return &Service{store: store, source: source, dbs: dbs, drivers: newRegistry(dbs), project: p}, nil
+	return &Service{source: source, dbs: dbs, drivers: newRegistry(dbs), root: scope{store: store, project: p}}, nil
+}
+
+// ---- Workspace ----
+
+// LoadService adds an existing service of the workspace, kept in dir
+// (relative to the workspace root) with its configuration in store.
+func (s *Service) LoadService(name, dir string, store ProjectStore) error {
+	if err := domain.ValidateServiceName(name); err != nil {
+		return fmt.Errorf("service in %s: %w", dir, err)
+	}
+	p, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("service %s: %w", name, err)
+	}
+	if p.MigrationsDir == "" {
+		p.MigrationsDir = defaultMigrationsDir
+	}
+	p.Service = name
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sc := range s.services {
+		if sc.name == name {
+			return fmt.Errorf("services %s and %s are both named %q; set a different \"service\" in one of their .godwit/config.json", sc.dir, dir, name)
+		}
+	}
+	s.services = append(s.services, &scope{name: name, dir: dir, store: store, project: p})
+	return nil
+}
+
+// AddService makes dir (relative to the workspace root, "/" separated) a
+// service named name: it writes the service's configuration to store and
+// lists dir in the root's. A plain project becomes a workspace this way; its
+// targets become global targets.
+func (s *Service) AddService(name, dir string, store ProjectStore) error {
+	if err := domain.ValidateServiceName(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sc := range s.services {
+		switch {
+		case sc.name == name:
+			return fmt.Errorf("a service named %q already exists (%s)", name, sc.dir)
+		case sc.dir == dir:
+			return fmt.Errorf("%s is already the service %q", dir, sc.name)
+		}
+	}
+	p, err := store.Load()
+	if err != nil {
+		return err
+	}
+	p.Service = name
+	if p.MigrationsDir == "" {
+		p.MigrationsDir = defaultMigrationsDir
+	}
+	if err := store.Save(p); err != nil {
+		return err
+	}
+	if !slices.Contains(s.root.project.Services, dir) {
+		s.root.project.Services = append(s.root.project.Services, dir)
+		if err := s.root.store.Save(s.root.project); err != nil {
+			return err
+		}
+	}
+	s.services = append(s.services, &scope{name: name, dir: dir, store: store, project: p})
+	return nil
+}
+
+// RemoveService takes a service out of the workspace. Its directory, its
+// configuration and its databases are left alone.
+func (s *Service) RemoveService(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.services, func(sc *scope) bool { return sc.name == name })
+	if i < 0 {
+		return s.noServiceLocked(name)
+	}
+	dir := s.services[i].dir
+	s.root.project.Services = slices.DeleteFunc(slices.Clone(s.root.project.Services), func(d string) bool {
+		return path.Clean(strings.ReplaceAll(d, `\`, "/")) == dir
+	})
+	if err := s.root.store.Save(s.root.project); err != nil {
+		return err
+	}
+	s.services = slices.Delete(s.services, i, i+1)
+	if s.current == name {
+		s.current = ""
+	}
+	return nil
+}
+
+// SetCurrentService makes name the service commands work on by default (the
+// directory godwit runs in). "" means every service.
+func (s *Service) SetCurrentService(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if name != "" && s.serviceLocked(name) == nil {
+		return s.noServiceLocked(name)
+	}
+	s.current = name
+	return nil
+}
+
+// IsWorkspace reports whether this is a workspace of services rather than a
+// plain project.
+func (s *Service) IsWorkspace() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workspaceLocked()
+}
+
+func (s *Service) workspaceLocked() bool {
+	return len(s.services) > 0 || s.root.project.IsWorkspace()
+}
+
+// Services lists the names of the workspace's services, in order.
+func (s *Service) Services() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.services))
+	for _, sc := range s.services {
+		out = append(out, sc.name)
+	}
+	return out
+}
+
+// ServiceDir returns a service's directory relative to the workspace root.
+func (s *Service) ServiceDir(name string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sc := s.serviceLocked(name); sc != nil {
+		return sc.dir, true
+	}
+	return "", false
+}
+
+// CurrentService is the service godwit runs in, or "".
+func (s *Service) CurrentService() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.current
+}
+
+// DefaultServices lists the services a command acts on when none is named:
+// the current service, else every service. A plain project has one unnamed
+// scope, [""].
+func (s *Service) DefaultServices() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch {
+	case !s.workspaceLocked():
+		return []string{""}
+	case s.current != "":
+		return []string{s.current}
+	}
+	out := make([]string, 0, len(s.services))
+	for _, sc := range s.services {
+		out = append(out, sc.name)
+	}
+	return out
+}
+
+func (s *Service) serviceLocked(name string) *scope {
+	for _, sc := range s.services {
+		if sc.name == name {
+			return sc
+		}
+	}
+	return nil
+}
+
+func (s *Service) noServiceLocked(name string) error {
+	if !s.workspaceLocked() {
+		return fmt.Errorf("no service %q: this is not a workspace (no \"services\" in .godwit/config.json)", name)
+	}
+	var names []string
+	for _, sc := range s.services {
+		names = append(names, sc.name)
+	}
+	return fmt.Errorf("no service named %q (services: %s)", name, strings.Join(names, ", "))
+}
+
+// scopeLocked returns the scope of a service; "" is the plain project or the
+// workspace root.
+func (s *Service) scopeLocked(service string) (*scope, error) {
+	if service == "" {
+		return &s.root, nil
+	}
+	if sc := s.serviceLocked(service); sc != nil {
+		return sc, nil
+	}
+	return nil, s.noServiceLocked(service)
+}
+
+// filesScopeLocked is scopeLocked for operations on migration files, which a
+// workspace root does not have.
+func (s *Service) filesScopeLocked(service string) (*scope, error) {
+	if service == "" && s.workspaceLocked() {
+		return nil, errors.New("the workspace root has no migrations of its own; name a service")
+	}
+	return s.scopeLocked(service)
+}
+
+// resolveLocked finds the target ref names. ctx is the scope whose
+// migrations are used (ref.Service), owner the one that defines the target:
+// the service itself or, for a global target, the workspace root.
+func (s *Service) resolveLocked(ref domain.TargetRef) (ctx, owner *scope, i int, err error) {
+	ctx, err = s.scopeLocked(ref.Service)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	if i = ctx.target(ref.Target); i >= 0 {
+		return ctx, ctx, i, nil
+	}
+	if ctx != &s.root {
+		if i = s.root.target(ref.Target); i >= 0 {
+			return ctx, &s.root, i, nil
+		}
+		return nil, nil, -1, fmt.Errorf("no target named %q for service %s", ref.Target, ref.Service)
+	}
+	return nil, nil, -1, fmt.Errorf("no target named %q", ref.Target)
 }
 
 // ---- Project configuration ----
@@ -61,197 +318,310 @@ func New(store ProjectStore, source MigrationSource, dbs DatabaseFactory) (*Serv
 // Drivers lists the supported database drivers.
 func (s *Service) Drivers() []string { return s.dbs.Drivers() }
 
-// Targets returns a copy of the project's targets.
-func (s *Service) Targets() []domain.Target {
+// ScopeTargets returns the targets a service can use: its own, then the
+// global ones it does not shadow. Service "" gives the plain project's
+// targets, or a workspace's global targets.
+func (s *Service) ScopeTargets(service string) []domain.Target {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return slices.Clone(s.project.Targets)
+	sc, err := s.scopeLocked(service)
+	if err != nil {
+		return nil
+	}
+	out := slices.Clone(sc.project.Targets)
+	if sc != &s.root {
+		for _, g := range s.root.project.Targets {
+			if sc.target(g.Name) < 0 {
+				out = append(out, g)
+			}
+		}
+	}
+	return out
 }
 
-// Target returns the named target.
-func (s *Service) Target(name string) (domain.Target, bool) {
+// TargetRefs lists every target the default services can use, service by
+// service (see DefaultServices). In a plain project it is every target.
+func (s *Service) TargetRefs() []domain.TargetRef {
+	var out []domain.TargetRef
+	for _, svc := range s.DefaultServices() {
+		for _, t := range s.ScopeTargets(svc) {
+			out = append(out, domain.TargetRef{Service: svc, Target: t.Name})
+		}
+	}
+	return out
+}
+
+// Target returns the target ref names.
+func (s *Service) Target(ref domain.TargetRef) (domain.Target, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.project.Target(name)
+	_, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return domain.Target{}, false
+	}
+	return owner.project.Targets[i], true
 }
 
-// MigrationsDir returns the configured migrations directory as written in
-// the project config.
-func (s *Service) MigrationsDir() string {
+// IsGlobal reports whether ref names a global target of a workspace.
+func (s *Service) IsGlobal(ref domain.TargetRef) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.project.MigrationsDir
+	_, owner, _, err := s.resolveLocked(ref)
+	return err == nil && owner == &s.root && s.workspaceLocked()
 }
 
-// MigrationsLocation returns the migrations directory as an absolute path.
-func (s *Service) MigrationsLocation() string { return s.source.Resolve(s.MigrationsDir()) }
+// MigrationsDir returns a service's migrations directory as written in its
+// configuration (relative to the service directory). Service "" is the plain
+// project.
+func (s *Service) MigrationsDir(service string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sc, err := s.scopeLocked(service)
+	if err != nil {
+		return ""
+	}
+	return sc.project.MigrationsDir
+}
 
-// SetMigrationsDir changes the migrations directory and saves the project.
-func (s *Service) SetMigrationsDir(dir string) error {
+// MigrationsLocation returns a service's migrations directory as an absolute
+// path.
+func (s *Service) MigrationsLocation(service string) string {
+	s.mu.RLock()
+	sc, err := s.scopeLocked(service)
+	path := ""
+	if err == nil {
+		path = sc.migrationsPath()
+	}
+	s.mu.RUnlock()
+	return s.source.Resolve(path)
+}
+
+// migrationsPath returns the directory the MigrationSource reads a service's
+// migrations from.
+func (s *Service) migrationsPath(service string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sc, err := s.filesScopeLocked(service)
+	if err != nil {
+		return "", err
+	}
+	return sc.migrationsPath(), nil
+}
+
+// SetMigrationsDir changes a service's migrations directory and saves its
+// configuration.
+func (s *Service) SetMigrationsDir(service, dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return errors.New("migrations directory is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.project.MigrationsDir = filepath.Clean(dir)
-	return s.store.Save(s.project)
+	sc, err := s.scopeLocked(service)
+	if err != nil {
+		return err
+	}
+	sc.project.MigrationsDir = filepath.Clean(dir)
+	return sc.store.Save(sc.project)
 }
 
-// EnsureMigrationsDir creates the migrations directory if needed.
-func (s *Service) EnsureMigrationsDir() error { return s.source.EnsureDir(s.MigrationsDir()) }
+// EnsureMigrationsDir creates a service's migrations directory if needed.
+func (s *Service) EnsureMigrationsDir(service string) error {
+	dir, err := s.migrationsPath(service)
+	if err != nil {
+		return err
+	}
+	return s.source.EnsureDir(dir)
+}
 
 func (s *Service) validate(t domain.Target) error {
 	switch {
 	case strings.TrimSpace(t.Name) == "":
 		return errors.New("target name is required")
+	case strings.Contains(t.Name, "/"):
+		return errors.New("target names cannot contain \"/\"")
 	case !slices.Contains(s.dbs.Drivers(), s.drivers.Normalize(t.Driver)):
 		return fmt.Errorf("unknown driver %q (available: %s)", t.Driver, strings.Join(s.dbs.Drivers(), ", "))
 	}
 	return nil
 }
 
-// AddTarget adds a target and saves the project. A non-empty password is
-// remembered (on disk if persist).
-func (s *Service) AddTarget(t domain.Target, password string, persist bool) error {
+// AddTarget adds a target to a service, or with service "" to the plain
+// project or as a global target of a workspace, and saves it. A non-empty
+// password is remembered (on disk if persist).
+func (s *Service) AddTarget(service string, t domain.Target, password string, persist bool) error {
 	t.Name = strings.TrimSpace(t.Name)
 	if err := s.validate(t); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, dup := s.project.Target(t.Name); dup {
+	sc, err := s.scopeLocked(service)
+	if err != nil {
+		return err
+	}
+	if sc.target(t.Name) >= 0 {
 		return fmt.Errorf("a target named %q already exists", t.Name)
 	}
-	s.project.Targets = append(s.project.Targets, t)
-	if err := s.store.Save(s.project); err != nil {
+	sc.project.Targets = append(sc.project.Targets, t)
+	if err := sc.store.Save(sc.project); err != nil {
 		return err
 	}
 	if password != "" {
-		return s.store.SetPassword(t.Name, password, persist)
+		return sc.store.SetPassword(t.Name, password, persist)
 	}
 	return nil
 }
 
-// UpdateTarget replaces the target with the same name. An empty password
-// keeps the current one.
-func (s *Service) UpdateTarget(t domain.Target, password string, persist bool) error {
+// UpdateTarget replaces the target ref names, where it is defined: editing a
+// global target changes it for every service. t keeps ref's name. An empty
+// password keeps the current one.
+func (s *Service) UpdateTarget(ref domain.TargetRef, t domain.Target, password string, persist bool) error {
+	if t.Name != ref.Target {
+		return fmt.Errorf("target %q cannot be renamed to %q", ref.Target, t.Name)
+	}
 	if err := s.validate(t); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == t.Name })
-	if i < 0 {
-		return fmt.Errorf("no target named %q", t.Name)
+	_, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return err
 	}
-	s.project.Targets[i] = t
-	if err := s.store.Save(s.project); err != nil {
+	owner.project.Targets[i] = t
+	if err := owner.store.Save(owner.project); err != nil {
 		return err
 	}
 	if password != "" {
-		return s.store.SetPassword(t.Name, password, persist)
+		return owner.store.SetPassword(t.Name, password, persist)
 	}
 	return nil
 }
 
-// RemoveTarget deletes a target and its stored password.
-func (s *Service) RemoveTarget(name string) error {
+// RemoveTarget deletes a target and its stored password. A global target is
+// only removed through the workspace root (service ""), not through a service
+// that uses it.
+func (s *Service) RemoveTarget(ref domain.TargetRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == name })
-	if i < 0 {
-		return fmt.Errorf("no target named %q", name)
-	}
-	s.project.Targets = slices.Delete(s.project.Targets, i, i+1)
-	if err := s.store.DeletePassword(name); err != nil {
+	ctx, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
 		return err
 	}
-	return s.store.Save(s.project)
+	if owner != ctx {
+		return fmt.Errorf("%q is a global target shared by every service; remove it at the workspace root (godwit auth remove %s)", ref.Target, ref.Target)
+	}
+	owner.project.Targets = slices.Delete(owner.project.Targets, i, i+1)
+	if err := owner.store.DeletePassword(ref.Target); err != nil {
+		return err
+	}
+	return owner.store.Save(owner.project)
 }
 
-// SetTargetEnabled enables or disables a target and saves the project. A
-// disabled target keeps its settings and password but is never connected to.
-func (s *Service) SetTargetEnabled(name string, enabled bool) error {
+// SetTargetEnabled enables or disables a target and saves it. A disabled
+// target keeps its settings and password but is never connected to. For a
+// global target this applies to every service.
+func (s *Service) SetTargetEnabled(ref domain.TargetRef, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == name })
-	if i < 0 {
-		return fmt.Errorf("no target named %q", name)
+	_, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return err
 	}
-	if s.project.Targets[i].Disabled == !enabled {
+	if owner.project.Targets[i].Disabled == !enabled {
 		return nil // already in the requested state
 	}
-	s.project.Targets[i].Disabled = !enabled
-	return s.store.Save(s.project)
+	owner.project.Targets[i].Disabled = !enabled
+	return owner.store.Save(owner.project)
 }
 
-// MigrationDisabled reports whether a migration version is disabled on t: the
-// target's own override wins over the project default.
-func (s *Service) MigrationDisabled(t domain.Target, version int64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.project.MigrationDisabled(t, version)
+// MigrationDisabled reports whether a migration version is disabled on ref:
+// the target's own override wins over the service's default.
+func (s *Service) MigrationDisabled(ref domain.TargetRef, version int64) bool {
+	disabled, _ := s.MigrationSetting(ref, version)
+	return disabled
 }
 
-// MigrationSetting returns whether a version is disabled on t and why: the
-// reason names the target's own override or the project default, and is empty
-// when the migration is enabled and nothing was overridden.
-func (s *Service) MigrationSetting(t domain.Target, version int64) (disabled bool, reason string) {
+// MigrationSetting returns whether a version is disabled on ref and why: the
+// reason names the target's own override or the default, and is empty when
+// the migration is enabled and nothing was overridden.
+func (s *Service) MigrationSetting(ref domain.TargetRef, version int64) (disabled bool, reason string) {
+	return s.settings(ref)(version)
+}
+
+// settings returns MigrationSetting for ref, from a snapshot of the
+// configuration, to call once per migration of a status.
+func (s *Service) settings(ref domain.TargetRef) func(int64) (bool, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	disabled = s.project.MigrationDisabled(t, version)
-	def := slices.Contains(s.project.DisabledMigrations, version)
-	switch {
-	case disabled && def:
-		return true, "disabled by default"
-	case disabled:
-		return true, "disabled on this target"
-	case def:
-		return false, "enabled on this target, disabled by default"
+	ctx, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return func(int64) (bool, string) { return false, "" }
 	}
-	return false, ""
+	p, t := ctx.project, owner.project.Targets[i]
+	p.DisabledMigrations = slices.Clone(p.DisabledMigrations)
+	t.DisabledMigrations, t.EnabledMigrations = slices.Clone(t.DisabledMigrations), slices.Clone(t.EnabledMigrations)
+	return func(version int64) (bool, string) {
+		disabled := p.MigrationDisabled(t, version)
+		def := slices.Contains(p.DisabledMigrations, version)
+		switch {
+		case disabled && def:
+			return true, "disabled by default"
+		case disabled:
+			return true, "disabled on this target"
+		case def:
+			return false, "enabled on this target, disabled by default"
+		}
+		return false, ""
+	}
 }
 
-// MigrationDisabledByDefault reports the project-wide default for a version.
-func (s *Service) MigrationDisabledByDefault(version int64) bool {
+// MigrationDisabledByDefault reports a service's default for a version.
+func (s *Service) MigrationDisabledByDefault(service string, version int64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return slices.Contains(s.project.DisabledMigrations, version)
+	sc, err := s.scopeLocked(service)
+	return err == nil && slices.Contains(sc.project.DisabledMigrations, version)
 }
 
-// SetMigrationEnabledDefault sets the project-wide default for a version. It
-// does not touch the targets' own overrides, which still win.
-func (s *Service) SetMigrationEnabledDefault(version int64, enabled bool) error {
+// SetMigrationEnabledDefault sets a service's default for a version. It does
+// not touch the targets' own overrides, which still win.
+func (s *Service) SetMigrationEnabledDefault(service string, version int64, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if slices.Contains(s.project.DisabledMigrations, version) == !enabled {
+	sc, err := s.filesScopeLocked(service)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(sc.project.DisabledMigrations, version) == !enabled {
 		return nil
 	}
-	s.project.DisabledMigrations = withVersion(s.project.DisabledMigrations, version, !enabled)
-	return s.store.Save(s.project)
+	sc.project.DisabledMigrations = withVersion(sc.project.DisabledMigrations, version, !enabled)
+	return sc.store.Save(sc.project)
 }
 
 // SetMigrationEnabled enables or disables one migration version on one target
-// and saves the project. A disabled migration is skipped when applying; it
+// and saves the target. A disabled migration is skipped when applying; it
 // stays listed, and an already applied one can still be rolled back. The
-// choice is stored as an override only when it differs from the project
-// default.
-func (s *Service) SetMigrationEnabled(target string, version int64, enabled bool) error {
+// choice is stored as an override only when it differs from the service's
+// default. The override is kept with the target's definition, so for a global
+// target it applies to that version in every service.
+func (s *Service) SetMigrationEnabled(ref domain.TargetRef, version int64, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.project.Targets, func(x domain.Target) bool { return x.Name == target })
-	if i < 0 {
-		return fmt.Errorf("no target named %q", target)
+	ctx, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return err
 	}
-	t := &s.project.Targets[i]
-	if s.project.MigrationDisabled(*t, version) == !enabled {
+	t := &owner.project.Targets[i]
+	if ctx.project.MigrationDisabled(*t, version) == !enabled {
 		return nil
 	}
-	def := slices.Contains(s.project.DisabledMigrations, version)
+	def := slices.Contains(ctx.project.DisabledMigrations, version)
 	t.DisabledMigrations = withVersion(t.DisabledMigrations, version, !enabled && !def)
 	t.EnabledMigrations = withVersion(t.EnabledMigrations, version, enabled && def)
-	return s.store.Save(s.project)
+	return owner.store.Save(owner.project)
 }
 
 // withVersion returns a sorted copy of list with version present or absent.
@@ -267,83 +637,159 @@ func withVersion(list []int64, version int64, present bool) []int64 {
 	return out
 }
 
+// owner returns the store holding ref's target and the target.
+func (s *Service) owner(ref domain.TargetRef) (ProjectStore, domain.Target, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, owner, i, err := s.resolveLocked(ref)
+	if err != nil {
+		return nil, domain.Target{}, false
+	}
+	return owner.store, owner.project.Targets[i], true
+}
+
 // HasPassword reports whether a password is available for the target.
-func (s *Service) HasPassword(name string) bool {
-	_, ok := s.store.Password(name)
+func (s *Service) HasPassword(ref domain.TargetRef) bool {
+	store, t, ok := s.owner(ref)
+	if !ok {
+		return false
+	}
+	_, ok = store.Password(t.Name)
 	return ok
 }
 
 // NeedsPassword reports whether the target's driver uses a password at all;
 // file based plugin drivers do not.
-func (s *Service) NeedsPassword(name string) bool {
-	t, ok := s.Target(name)
+func (s *Service) NeedsPassword(ref domain.TargetRef) bool {
+	t, ok := s.Target(ref)
 	return ok && !s.DriverNoHost(t.Driver)
 }
 
-// TargetsMissingPassword lists enabled targets with no available password.
+// PasswordKey is the environment variable that holds the target's password.
+func (s *Service) PasswordKey(ref domain.TargetRef) string {
+	if store, t, ok := s.owner(ref); ok {
+		return store.PasswordKey(t.Name)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sc, err := s.scopeLocked(ref.Service); err == nil {
+		return sc.store.PasswordKey(ref.Target)
+	}
+	return s.root.store.PasswordKey(ref.Target)
+}
+
+// TargetsMissingPassword lists enabled targets with no available password,
+// once per definition: a global target is listed as itself (no service).
 // Disabled targets are never connected to, so they are not asked for one.
-func (s *Service) TargetsMissingPassword() []domain.Target {
-	var out []domain.Target
-	for _, t := range s.Targets() {
-		if !t.Disabled && s.NeedsPassword(t.Name) && !s.HasPassword(t.Name) {
-			out = append(out, t)
+func (s *Service) TargetsMissingPassword() []domain.TargetRef {
+	var out []domain.TargetRef
+	for _, ref := range s.TargetRefs() {
+		if s.IsGlobal(ref) {
+			ref.Service = ""
+		}
+		if slices.Contains(out, ref) {
+			continue
+		}
+		t, ok := s.Target(ref)
+		if ok && !t.Disabled && s.NeedsPassword(ref) && !s.HasPassword(ref) {
+			out = append(out, ref)
 		}
 	}
 	return out
 }
 
-// SetPassword remembers a target's password (on disk if persist).
-func (s *Service) SetPassword(name, password string, persist bool) error {
-	if _, ok := s.Target(name); !ok {
-		return fmt.Errorf("no target named %q", name)
+// SetPassword remembers a target's password (on disk if persist), where the
+// target is defined.
+func (s *Service) SetPassword(ref domain.TargetRef, password string, persist bool) error {
+	store, t, ok := s.owner(ref)
+	if !ok {
+		return fmt.Errorf("no target named %q", ref.String())
 	}
-	return s.store.SetPassword(name, password, persist)
+	return store.SetPassword(t.Name, password, persist)
+}
+
+// AuthCommand is the command that addresses ref's target where it is
+// defined, for messages: "godwit auth <verb> [-s service] <target>".
+func (s *Service) AuthCommand(verb string, ref domain.TargetRef) string {
+	if s.IsGlobal(ref) || ref.Service == "" {
+		return fmt.Sprintf("godwit auth %s %s", verb, ref.Target)
+	}
+	return fmt.Sprintf("godwit auth %s -s %s %s", verb, ref.Service, ref.Target)
 }
 
 // ---- Migration files ----
 
-// Migrations loads every migration definition, sorted by version.
-func (s *Service) Migrations() ([]*domain.Migration, error) {
-	return s.source.Load(s.MigrationsDir())
+// Migrations loads every migration definition of a service, sorted by
+// version.
+func (s *Service) Migrations(service string) ([]*domain.Migration, error) {
+	dir, err := s.migrationsPath(service)
+	if err != nil {
+		return nil, err
+	}
+	return s.source.Load(dir)
 }
 
-// MigrationFiles lists every migration file, including those that failed to
-// load (their Err is set).
-func (s *Service) MigrationFiles() ([]domain.MigrationFile, error) {
-	return s.source.Scan(s.MigrationsDir())
+// MigrationFiles lists every migration file of a service, including those
+// that failed to load (their Err is set).
+func (s *Service) MigrationFiles(service string) ([]domain.MigrationFile, error) {
+	dir, err := s.migrationsPath(service)
+	if err != nil {
+		return nil, err
+	}
+	return s.source.Scan(dir)
 }
 
-// CreateMigration scaffolds a new migration and returns its location.
-func (s *Service) CreateMigration(name string) (string, error) {
-	return s.source.Create(s.MigrationsDir(), strings.TrimSpace(name))
+// CreateMigration scaffolds a new migration for a service and returns its
+// location.
+func (s *Service) CreateMigration(service, name string) (string, error) {
+	dir, err := s.migrationsPath(service)
+	if err != nil {
+		return "", err
+	}
+	return s.source.Create(dir, strings.TrimSpace(name))
 }
 
 // ---- Running migrations ----
 
-func (s *Service) open(ctx context.Context, target string) (Database, domain.Target, error) {
-	t, ok := s.Target(target)
-	if !ok {
-		return nil, t, fmt.Errorf("no target named %q", target)
+// open connects to ref's target, recording migrations in its service's state
+// table.
+func (s *Service) open(ctx context.Context, ref domain.TargetRef) (Database, domain.Target, error) {
+	s.mu.RLock()
+	sc, owner, i, err := s.resolveLocked(ref)
+	var (
+		t     domain.Target
+		table string
+		store ProjectStore
+	)
+	if err == nil {
+		t, table, store = owner.project.Targets[i], sc.table(), owner.store
+		if ref.Service == "" && s.workspaceLocked() {
+			err = fmt.Errorf("%q is a global target: name the service to migrate on it, as in <service>/%s or with -s <service>", ref.Target, ref.Target)
+		}
+	}
+	s.mu.RUnlock()
+	if err != nil {
+		return nil, t, err
 	}
 	if t.Disabled {
-		return nil, t, fmt.Errorf("%q: %w (enable it with: godwit auth enable %s)", target, ErrTargetDisabled, target)
+		return nil, t, fmt.Errorf("%q: %w (enable it with: %s)", ref.String(), ErrTargetDisabled, s.AuthCommand("enable", ref))
 	}
-	pw, ok := s.store.Password(target)
-	if !ok && s.NeedsPassword(target) {
-		return nil, t, fmt.Errorf("no password for target %q", target)
+	pw, ok := store.Password(t.Name)
+	if !ok && !s.DriverNoHost(t.Driver) {
+		return nil, t, fmt.Errorf("no password for target %q (set %s)", ref.String(), store.PasswordKey(t.Name))
 	}
-	db, err := s.dbs.Open(ctx, t, pw)
+	db, err := s.dbs.Open(ctx, t, pw, table)
 	return db, t, err
 }
 
 // Status lists every known migration with its state on the target. It creates
-// godwit_migration if the target does not have it yet.
-func (s *Service) Status(ctx context.Context, target string) ([]domain.Item, error) {
-	migs, err := s.Migrations()
+// the service's state table if the target does not have it yet.
+func (s *Service) Status(ctx context.Context, ref domain.TargetRef) ([]domain.Item, error) {
+	migs, err := s.Migrations(ref.Service)
 	if err != nil {
 		return nil, err
 	}
-	db, t, err := s.open(ctx, target)
+	db, _, err := s.open(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +801,7 @@ func (s *Service) Status(ctx context.Context, target string) ([]domain.Item, err
 	if err != nil {
 		return nil, err
 	}
-	return merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) }), nil
+	return merge(migs, recs, s.settings(ref)), nil
 }
 
 func merge(migs []*domain.Migration, recs []domain.Record, setting func(int64) (bool, string)) []domain.Item {
@@ -395,12 +841,12 @@ func merge(migs []*domain.Migration, recs []domain.Record, setting func(int64) (
 // lockedStatus opens the target, takes its lock and returns the current
 // status. It refuses to continue while any migration is dirty. release
 // unlocks and closes; call it exactly once.
-func (s *Service) lockedStatus(ctx context.Context, target string) (db Database, items []domain.Item, release func() error, err error) {
-	migs, err := s.Migrations()
+func (s *Service) lockedStatus(ctx context.Context, ref domain.TargetRef) (db Database, items []domain.Item, release func() error, err error) {
+	migs, err := s.Migrations(ref.Service)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	db, t, err := s.open(ctx, target)
+	db, _, err = s.open(ctx, ref)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -427,7 +873,7 @@ func (s *Service) lockedStatus(ctx context.Context, target string) (db Database,
 		release() //nolint:errcheck
 		return nil, nil, nil, err
 	}
-	items = merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) })
+	items = merge(migs, recs, s.settings(ref))
 	for _, it := range items {
 		if it.State == domain.Dirty {
 			release() //nolint:errcheck
@@ -444,8 +890,8 @@ type picker func(items []domain.Item) ([]domain.Item, error)
 // execute opens the target, locks it, and runs the migrations chosen by pick
 // in the given direction. It returns how many completed. A run stops at the
 // first failure.
-func (s *Service) execute(ctx context.Context, target string, dir domain.Direction, prog Progress, pick picker) (done int, err error) {
-	db, items, release, err := s.lockedStatus(ctx, target)
+func (s *Service) execute(ctx context.Context, ref domain.TargetRef, dir domain.Direction, prog Progress, pick picker) (done int, err error) {
+	db, items, release, err := s.lockedStatus(ctx, ref)
 	if err != nil {
 		return 0, err
 	}
@@ -573,8 +1019,8 @@ func findItem(items []domain.Item, version int64) (domain.Item, error) {
 
 // Up applies pending migrations in version order. limit <= 0 applies all of
 // them. It returns how many were applied.
-func (s *Service) Up(ctx context.Context, target string, limit int, prog Progress) (int, error) {
-	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+func (s *Service) Up(ctx context.Context, ref domain.TargetRef, limit int, prog Progress) (int, error) {
+	return s.execute(ctx, ref, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
 		todo := pendingItems(items)
 		if limit > 0 && len(todo) > limit {
 			todo = todo[:limit]
@@ -585,11 +1031,11 @@ func (s *Service) Up(ctx context.Context, target string, limit int, prog Progres
 
 // Down reverts the n most recently applied migrations (n <= 0 means 1), by
 // time applied rather than by version. It returns how many were reverted.
-func (s *Service) Down(ctx context.Context, target string, n int, prog Progress) (int, error) {
+func (s *Service) Down(ctx context.Context, ref domain.TargetRef, n int, prog Progress) (int, error) {
 	if n <= 0 {
 		n = 1
 	}
-	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+	return s.execute(ctx, ref, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
 		todo := appliedLatestFirst(items)
 		if len(todo) > n {
 			todo = todo[:n]
@@ -601,8 +1047,8 @@ func (s *Service) Down(ctx context.Context, target string, n int, prog Progress)
 // DownBatch reverts the most recent apply run: every migration applied in the
 // same batch as the most recently applied one, newest first. It returns how
 // many were reverted.
-func (s *Service) DownBatch(ctx context.Context, target string, prog Progress) (int, error) {
-	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+func (s *Service) DownBatch(ctx context.Context, ref domain.TargetRef, prog Progress) (int, error) {
+	return s.execute(ctx, ref, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
 		return LatestBatch(items), nil
 	})
 }
@@ -610,8 +1056,8 @@ func (s *Service) DownBatch(ctx context.Context, target string, prog Progress) (
 // UpTo applies every pending migration up to and including version, in
 // version order. The migration must exist and be pending. Pending migrations
 // with a higher version are left alone.
-func (s *Service) UpTo(ctx context.Context, target string, version int64, prog Progress) (int, error) {
-	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+func (s *Service) UpTo(ctx context.Context, ref domain.TargetRef, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, ref, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
 		sel, err := findItem(items, version)
 		if err != nil {
 			return nil, err
@@ -620,7 +1066,7 @@ func (s *Service) UpTo(ctx context.Context, target string, version int64, prog P
 			return nil, fmt.Errorf("%d_%s is already %s; nothing to apply up to it", sel.Version, sel.Name, sel.State)
 		}
 		if sel.Disabled {
-			return nil, fmt.Errorf("%d_%s is disabled on %s; enable it first", sel.Version, sel.Name, target)
+			return nil, fmt.Errorf("%d_%s is disabled on %s; enable it first", sel.Version, sel.Name, ref)
 		}
 		var todo []domain.Item
 		for _, it := range pendingItems(items) {
@@ -635,8 +1081,8 @@ func (s *Service) UpTo(ctx context.Context, target string, version int64, prog P
 // ApplyOnly applies the single pending migration with the given version and
 // nothing else, even if older migrations are still pending or it is disabled
 // on the target. Later migrations that depend on skipped ones may fail.
-func (s *Service) ApplyOnly(ctx context.Context, target string, version int64, prog Progress) (int, error) {
-	return s.execute(ctx, target, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
+func (s *Service) ApplyOnly(ctx context.Context, ref domain.TargetRef, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, ref, domain.Up, prog, func(items []domain.Item) ([]domain.Item, error) {
 		sel, err := findItem(items, version)
 		if err != nil {
 			return nil, err
@@ -652,14 +1098,14 @@ func (s *Service) ApplyOnly(ctx context.Context, target string, version int64, p
 // that version becomes the most recently applied migration. The migration
 // itself stays applied. It must exist and be applied; if it already is the
 // newest, nothing is reverted.
-func (s *Service) DownTo(ctx context.Context, target string, version int64, prog Progress) (int, error) {
-	return s.execute(ctx, target, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
+func (s *Service) DownTo(ctx context.Context, ref domain.TargetRef, version int64, prog Progress) (int, error) {
+	return s.execute(ctx, ref, domain.Down, prog, func(items []domain.Item) ([]domain.Item, error) {
 		sel, err := findItem(items, version)
 		if err != nil {
 			return nil, err
 		}
 		if sel.Record == nil {
-			return nil, fmt.Errorf("%d_%s is not applied on %s; nothing to roll back down to", sel.Version, sel.Name, target)
+			return nil, fmt.Errorf("%d_%s is not applied on %s; nothing to roll back down to", sel.Version, sel.Name, ref)
 		}
 		var todo []domain.Item
 		for _, it := range appliedNewestFirst(items) {
@@ -679,8 +1125,8 @@ func (s *Service) DownTo(ctx context.Context, target string, version int64, prog
 // If the revert succeeds but the re-apply fails, the migration is left
 // reverted (pending, or dirty on engines without transactional DDL) and the
 // error says so.
-func (s *Service) Redo(ctx context.Context, target string, version int64, prog Progress) (err error) {
-	db, items, release, err := s.lockedStatus(ctx, target)
+func (s *Service) Redo(ctx context.Context, ref domain.TargetRef, version int64, prog Progress) (err error) {
+	db, items, release, err := s.lockedStatus(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -702,7 +1148,7 @@ func (s *Service) Redo(ctx context.Context, target string, version int64, prog P
 	case it.Migration == nil:
 		return fmt.Errorf("cannot redo %d_%s: migration file is missing", it.Version, it.Name)
 	case it.Record == nil:
-		return fmt.Errorf("%d_%s has not been applied on %s; apply it instead", it.Version, it.Name, target)
+		return fmt.Errorf("%d_%s has not been applied on %s; apply it instead", it.Version, it.Name, ref)
 	}
 
 	step := func(dir domain.Direction, do func(context.Context, *domain.Migration) error) error {
@@ -732,8 +1178,8 @@ func (s *Service) Redo(ctx context.Context, target string, version int64, prog P
 }
 
 // ClearDirty clears a dirty flag after the user repaired the target by hand.
-func (s *Service) ClearDirty(ctx context.Context, target string, version int64) error {
-	db, _, err := s.open(ctx, target)
+func (s *Service) ClearDirty(ctx context.Context, ref domain.TargetRef, version int64) error {
+	db, _, err := s.open(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -743,19 +1189,19 @@ func (s *Service) ClearDirty(ctx context.Context, target string, version int64) 
 
 // ForceState rewrites one migration's recorded state on a target without
 // running it: pending removes its record, applied writes a clean one, dirty
-// marks it as a failed run. Only the godwit_migration table changes; the schema
+// marks it as a failed run. Only the state table changes; the schema
 // does not. It is a debugging tool for states that are hard to reach otherwise.
-func (s *Service) ForceState(ctx context.Context, target string, version int64, state domain.State) (err error) {
+func (s *Service) ForceState(ctx context.Context, ref domain.TargetRef, version int64, state domain.State) (err error) {
 	switch state {
 	case domain.Pending, domain.Applied, domain.Dirty:
 	default:
 		return fmt.Errorf("cannot force state %q (use pending, applied or dirty)", state)
 	}
-	migs, err := s.Migrations()
+	migs, err := s.Migrations(ref.Service)
 	if err != nil {
 		return err
 	}
-	db, t, err := s.open(ctx, target)
+	db, t, err := s.open(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -781,7 +1227,7 @@ func (s *Service) ForceState(ctx context.Context, target string, version int64, 
 	if err != nil {
 		return err
 	}
-	items := merge(migs, recs, func(v int64) (bool, string) { return s.MigrationSetting(t, v) })
+	items := merge(migs, recs, s.settings(ref))
 	var it *domain.Item
 	for i := range items {
 		if items[i].Version == version {

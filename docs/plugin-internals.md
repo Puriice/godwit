@@ -115,7 +115,10 @@ godwit keeps the migration *policy*; the plugin supplies the *mechanism*.
   `RepeatStart`/`RepeatEnd` blocks, before contacting the plugin. Statements
   reach a plugin as a flat list, which cannot express a loop.
 - The plugin decides how to run them: transaction or not, how to take the lock,
-  and the column types of `godwit_migration`. The dirty-flag protocol is
+  and the column types of the state table. The table's name arrives with
+  `open` (`godwit_migration`, or `godwit_migration_<service>` in a workspace),
+  and `Factory.Open` refuses a protocol 1 plugin when the name is not the
+  default. The dirty-flag protocol is
   specified in [plugins.md](plugins.md) because godwit relies on it to detect
   half-applied migrations.
 
@@ -152,9 +155,11 @@ semantics fails that test until the other side matches.
 
 Additive changes that old plugins can ignore (new optional fields) do not need a
 version bump. Anything that changes the meaning of an existing method does:
-increase `ProtocolVersion`. `probe` rejects a plugin whose handshake `protocol`
-differs, so there is no negotiation. If you need to support two versions at
-once, that has to be added to `probe` first.
+increase `ProtocolVersion`. `probe` accepts handshake versions from
+`minProtocol` to `ProtocolVersion` and keeps the version on the driver, so code
+that relies on a newer version checks it (as `Factory.Open` does for the state
+table name, added in protocol 2). Raise `minProtocol` only to drop support for
+old plugins.
 
 ## Tests
 
@@ -214,7 +219,10 @@ Plugins can be registered per project or for the user, in `~/.godwit`.
   (`StrikethroughSpaces(false)`) and neither is the note.
 - **Only plugins are global.** Only plugins are read
   from `~/.godwit`. Targets, passwords and the migrations directory are always
-  the project's.
+  the project's (or, in a workspace, the root's and its services'). Plugins
+  listed by a workspace's services are merged with
+  `domain.MergeWorkspacePlugins`, and their binaries resolve against the
+  workspace root.
 
 ## Installing plugins
 

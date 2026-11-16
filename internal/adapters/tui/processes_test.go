@@ -19,15 +19,15 @@ type stubRunner struct {
 	queued     bool // Start reports the job as queued behind a run
 }
 
-func (s *stubRunner) ClearQueue(target string) (int, error) {
+func (s *stubRunner) ClearQueue(r domain.TargetRef) (int, error) {
 	if !s.dequeueOK {
 		return 0, errors.New("the queue has changed")
 	}
-	s.cleared = append(s.cleared, target)
+	s.cleared = append(s.cleared, r.String())
 	return 2, nil
 }
 
-func (s *stubRunner) Dequeue(_ string, index int, j domain.Job) error {
+func (s *stubRunner) Dequeue(_ domain.TargetRef, index int, j domain.Job) error {
 	if !s.dequeueOK {
 		return errors.New("the queue has changed")
 	}
@@ -40,9 +40,14 @@ func (s *stubRunner) Start(j domain.Job) (bool, error) {
 	s.started = append(s.started, j)
 	return s.queued, nil
 }
-func (*stubRunner) LogPath(t string) string                   { return "runs/" + t + ".log" }
-func (*stubRunner) Poll(string, int64) (app.RunStatus, error) { return app.RunStatus{}, nil }
-func (s *stubRunner) Stop(t string) error                     { s.stopped = append(s.stopped, t); return nil }
+func (*stubRunner) LogPath(r domain.TargetRef) string { return "runs/" + r.String() + ".log" }
+func (*stubRunner) Poll(domain.TargetRef, int64) (app.RunStatus, error) {
+	return app.RunStatus{}, nil
+}
+func (s *stubRunner) Stop(r domain.TargetRef) error {
+	s.stopped = append(s.stopped, r.String())
+	return nil
+}
 
 // processesModel is a model on the processes panel, with a background run on
 // target "a" found at startup: migration 1 done, 2 executing, 3 queued.
@@ -50,12 +55,12 @@ func processesModel(t *testing.T) (*Model, *stubRunner) {
 	t.Helper()
 	bg := &stubRunner{}
 	m := testModel(t).WithBackground(bg)
-	m.Update(statusMsg{target: "a", items: []domain.Item{
+	m.Update(statusMsg{ref: ref("a"), items: []domain.Item{
 		{Version: 1, Name: "x", State: domain.Applied},
 		{Version: 2, Name: "y", State: domain.Dirty}, // being executed by the worker
 		{Version: 3, Name: "z", State: domain.Pending},
 	}})
-	m.Update(bgAttachMsg{target: "a", st: app.RunStatus{
+	m.Update(bgAttachMsg{ref: ref("a"), st: app.RunStatus{
 		Job:    domain.Job{Target: "a", Op: domain.OpUp},
 		Pid:    4242,
 		Active: true,
@@ -96,7 +101,7 @@ func TestProcessesPanelWithoutRuns(t *testing.T) {
 
 func TestProcessesPanelShowsDetailsOfARun(t *testing.T) {
 	m, _ := processesModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	if !st.running || st.total != 3 || st.done != 1 {
 		t.Fatalf("running=%v total=%d done=%d", st.running, st.total, st.done)
 	}
@@ -114,7 +119,7 @@ func TestProcessesPanelShowsDetailsOfARun(t *testing.T) {
 		}
 	}
 
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, Count: 3,
 		Lines: []string{"✓ up 2_y", "✓ up 3_z"}, Finished: []int64{2, 3},
 	}})
@@ -137,7 +142,7 @@ func lineWith(view, s string) string {
 func TestProcessDetailSitsBesideTheList(t *testing.T) {
 	m, _ := processesModel(t)
 	// A second run, so the list has two rows.
-	b := m.state("b")
+	b := m.state(ref("b"))
 	b.begin(domain.Job{Target: "b", Op: domain.OpDown}, 99)
 	b.running = true
 	m.screen = scrProcesses
@@ -166,9 +171,9 @@ func TestCancelAsksThenStopsTheWorker(t *testing.T) {
 		t.Fatal("stopped before the user confirmed")
 	}
 	// What confirming the form does.
-	st := m.state("a")
+	st := m.state(ref("a"))
 	m.screen = scrProcesses
-	m.stopRun("a")
+	m.stopRun(ref("a"))
 	if len(bg.stopped) != 1 || bg.stopped[0] != "a" {
 		t.Fatalf("stopped = %v", bg.stopped)
 	}
@@ -177,7 +182,7 @@ func TestCancelAsksThenStopsTheWorker(t *testing.T) {
 	}
 
 	// The worker records the cancellation, which the poll reports.
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Done: true, Cancelled: true, Count: 1,
 		Err: "2_y: context canceled",
 	}})
@@ -188,7 +193,7 @@ func TestCancelAsksThenStopsTheWorker(t *testing.T) {
 
 func TestCancelNeedsARunningProcess(t *testing.T) {
 	m, bg := processesModel(t)
-	m.state("a").running = false
+	m.state(ref("a")).running = false
 	m.screen = scrProcesses
 	m.Update(key("x"))
 	if m.screen == scrForm || len(bg.stopped) != 0 || !strings.Contains(m.notice, "no run in progress") {
@@ -200,7 +205,7 @@ func TestCancelNeedsARunningProcess(t *testing.T) {
 func queuedModel(t *testing.T) (*Model, *stubRunner) {
 	t.Helper()
 	m, bg := processesModel(t)
-	m.state("a").pending = []domain.Job{
+	m.state(ref("a")).pending = []domain.Job{
 		{Target: "a", Op: domain.OpRedo, Version: 7},
 		{Target: "a", Op: domain.OpDown, N: 1},
 	}
@@ -245,8 +250,8 @@ func TestXOnAQueuedJobRemovesItNotTheRun(t *testing.T) {
 	}
 	// What confirming the form does.
 	m.screen = scrProcesses
-	m.dequeue("a", 0, m.state("a").pending[0])
-	st := m.state("a")
+	m.dequeue(ref("a"), 0, m.state(ref("a")).pending[0])
+	st := m.state(ref("a"))
 	if len(bg.dequeued) != 1 || bg.dequeued[0].Op != domain.OpRedo || len(bg.stopped) != 0 {
 		t.Fatalf("dequeued=%v stopped=%v", bg.dequeued, bg.stopped)
 	}
@@ -260,7 +265,7 @@ func TestXOnADuplicateRemovesTheSelectedPosition(t *testing.T) {
 	bg.dequeueOK = true
 	a := domain.Job{Target: "a", Op: domain.OpRedo, Version: 7}
 	b := domain.Job{Target: "a", Op: domain.OpDown, N: 1}
-	st := m.state("a")
+	st := m.state(ref("a"))
 	st.pending = []domain.Job{a, b, a}
 
 	// Select the last A: the run, then A, B, A.
@@ -273,7 +278,7 @@ func TestXOnADuplicateRemovesTheSelectedPosition(t *testing.T) {
 	}
 	// What confirming the form does, for the selected row.
 	m.screen = scrProcesses
-	m.dequeue("a", 2, st.pending[2])
+	m.dequeue(ref("a"), 2, st.pending[2])
 	if len(bg.dequeuedAt) != 1 || bg.dequeuedAt[0] != 2 {
 		t.Fatalf("asked the runner to remove position %v, want 2", bg.dequeuedAt)
 	}
@@ -285,7 +290,7 @@ func TestXOnADuplicateRemovesTheSelectedPosition(t *testing.T) {
 func TestCapitalXAsksThenClearsTheWholeQueue(t *testing.T) {
 	m, bg := queuedModel(t)
 	bg.dequeueOK = true
-	st := m.state("a")
+	st := m.state(ref("a"))
 
 	// From a queued row, not only from the run.
 	m.Update(key("down"))
@@ -299,7 +304,7 @@ func TestCapitalXAsksThenClearsTheWholeQueue(t *testing.T) {
 	}
 	// What confirming the form does.
 	m.screen = scrProcesses
-	m.clearPending("a")
+	m.clearPending(ref("a"))
 	if len(bg.cleared) != 1 || bg.cleared[0] != "a" || len(bg.stopped) != 0 {
 		t.Fatalf("cleared=%v stopped=%v", bg.cleared, bg.stopped)
 	}
@@ -326,27 +331,27 @@ func TestCapitalXWithNothingQueuedSaysSo(t *testing.T) {
 func TestClearQueueFailureKeepsTheQueue(t *testing.T) {
 	m, bg := queuedModel(t)
 	bg.dequeueOK = false
-	m.clearPending("a")
-	if len(m.state("a").pending) != 2 || !strings.Contains(m.notice, "clear queue") {
-		t.Errorf("pending=%v notice=%q", m.state("a").pending, m.notice)
+	m.clearPending(ref("a"))
+	if len(m.state(ref("a")).pending) != 2 || !strings.Contains(m.notice, "clear queue") {
+		t.Errorf("pending=%v notice=%q", m.state(ref("a")).pending, m.notice)
 	}
 }
 
 func TestRemovingAJobThatAlreadyStartedIsReported(t *testing.T) {
 	m, bg := queuedModel(t)
 	bg.dequeueOK = false
-	m.dequeue("a", 0, m.state("a").pending[0])
-	if len(m.state("a").pending) != 2 || !strings.Contains(m.notice, "has changed") {
-		t.Errorf("pending=%v notice=%q", m.state("a").pending, m.notice)
+	m.dequeue(ref("a"), 0, m.state(ref("a")).pending[0])
+	if len(m.state(ref("a")).pending) != 2 || !strings.Contains(m.notice, "has changed") {
+		t.Errorf("pending=%v notice=%q", m.state(ref("a")).pending, m.notice)
 	}
 }
 
 func TestStartingAJobWhileRunningQueuesIt(t *testing.T) {
 	m, bg := processesModel(t)
 	bg.queued = true
-	a, _ := m.svc.Target("a")
+	a, _ := m.row(ref("a"))
 	m.redo(a, 7)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	if len(bg.started) != 1 || bg.started[0].Op != domain.OpRedo {
 		t.Fatalf("started = %v", bg.started)
 	}
@@ -364,10 +369,10 @@ func TestStartingAJobWhileRunningQueuesIt(t *testing.T) {
 
 func TestRunHandsOverToTheQueuedJob(t *testing.T) {
 	m, _ := processesModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 
 	// The run ends well and the next queued job takes over in a new worker.
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true, Count: 3,
 	}})
 	if !st.running || st.waitPid != 4242 {
@@ -375,15 +380,15 @@ func TestRunHandsOverToTheQueuedJob(t *testing.T) {
 	}
 
 	// Until another worker appears, the old one's log is not mistaken for it.
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true, Count: 3,
 	}})
-	m.Update(bgPollMsg{target: "a"})
+	m.Update(bgPollMsg{ref: ref("a")})
 	if !st.running || st.waitPid != 4242 || st.runErr != nil {
 		t.Fatalf("running=%v waitPid=%d err=%v", st.running, st.waitPid, st.runErr)
 	}
 
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpRedo, Version: 2}, Pid: 5151, Active: true,
 		Lines: []string{"… down 2_y"},
 	}})
@@ -392,7 +397,7 @@ func TestRunHandsOverToTheQueuedJob(t *testing.T) {
 	}
 
 	// ... and it ends like any other run.
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpRedo, Version: 2}, Pid: 5151, Done: true, Count: 1,
 	}})
 	if st.running {
@@ -402,12 +407,12 @@ func TestRunHandsOverToTheQueuedJob(t *testing.T) {
 
 func TestHandoverThatNeverStartsIsReported(t *testing.T) {
 	m, _ := processesModel(t)
-	st := m.state("a")
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	st := m.state(ref("a"))
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Pid: 4242, Done: true, More: true,
 	}})
 	for range maxHandoverPolls + 1 {
-		m.Update(bgPollMsg{target: "a"})
+		m.Update(bgPollMsg{ref: ref("a")})
 	}
 	if st.running || st.runErr == nil || !strings.Contains(st.runErr.Error(), "did not start") {
 		t.Errorf("running=%v err=%v", st.running, st.runErr)
@@ -416,10 +421,10 @@ func TestHandoverThatNeverStartsIsReported(t *testing.T) {
 
 func TestFailedRunIsNotShownAsCancelled(t *testing.T) {
 	m, _ := processesModel(t)
-	m.Update(bgPollMsg{target: "a", st: app.RunStatus{
+	m.Update(bgPollMsg{ref: ref("a"), st: app.RunStatus{
 		Job: domain.Job{Target: "a", Op: domain.OpUp}, Done: true, Err: "2_y: syntax error",
 	}})
-	st := m.state("a")
+	st := m.state(ref("a"))
 	if st.cancelled || st.runErr == nil {
 		t.Errorf("cancelled=%v runErr=%v", st.cancelled, st.runErr)
 	}

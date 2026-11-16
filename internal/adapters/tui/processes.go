@@ -40,7 +40,7 @@ func (st *targetState) processStatus() string {
 // processItem is one selectable line of the processes list: a target's run,
 // or one of the jobs queued behind it.
 type processItem struct {
-	target domain.Target
+	target row
 	queued int // index into the target's queue; -1 for the run itself
 }
 
@@ -48,7 +48,7 @@ type processItem struct {
 func (m *Model) processItems() []processItem {
 	var out []processItem
 	for _, t := range m.targets() {
-		st := m.state(t.Name)
+		st := m.state(t.ref)
 		if !st.hasProcesses() {
 			continue
 		}
@@ -136,7 +136,7 @@ func (m *Model) viewProcesses() string {
 	m.prcur = min(m.prcur, len(items)-1)
 	sel := items[m.prcur]
 	t := sel.target
-	st := m.state(t.Name)
+	st := m.state(t.ref)
 
 	// Like the debug panel: the list on the left, the selected run's details
 	// in a second column, or below the list on a terminal too narrow for two.
@@ -148,18 +148,18 @@ func (m *Model) viewProcesses() string {
 		it := items[i]
 		ptr := pointer(i == m.prcur)
 		if it.queued < 0 {
-			list.WriteString(m.processRow(ptr, it.target.Name, m.state(it.target.Name)))
+			list.WriteString(m.processRow(ptr, it.target.label(), m.state(it.target.ref)))
 		} else {
-			list.WriteString(queuedRow(ptr, m.state(it.target.Name).pending[it.queued]))
+			list.WriteString(queuedRow(ptr, m.state(it.target.ref).pending[it.queued]))
 		}
 		list.WriteRune('\n')
 	}
 	listText := strings.TrimRight(list.String(), "\n")
 	detailOf := func(width int) string {
 		if sel.queued >= 0 {
-			return m.queuedDetail(t.Name, st, sel.queued, width)
+			return m.queuedDetail(t.label(), st, sel.queued, width)
 		}
-		return m.processDetail(t.Name, st, width)
+		return m.processDetail(t.label(), st, width)
 	}
 	if wide {
 		detail := detailOf(detailW)
@@ -174,7 +174,7 @@ func (m *Model) viewProcesses() string {
 	}
 
 	if m.bg != nil {
-		fmt.Fprintf(&b, "\n%s %s\n", titleStyle.Render("Log"), dimStyle.Render(m.bg.LogPath(t.Name)))
+		fmt.Fprintf(&b, "\n%s %s\n", titleStyle.Render("Log"), dimStyle.Render(m.bg.LogPath(t.ref)))
 	} else {
 		fmt.Fprintf(&b, "\n%s\n", titleStyle.Render("Log"))
 	}
@@ -328,57 +328,57 @@ func (m *Model) updateProcesses(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // clearQueue asks for confirmation, then removes every job queued behind the
 // target's run. The run in progress is not affected.
-func (m *Model) clearQueue(t domain.Target) tea.Cmd {
-	n := len(m.state(t.Name).pending)
+func (m *Model) clearQueue(t row) tea.Cmd {
+	n := len(m.state(t.ref).pending)
 	if n == 0 || m.bg == nil {
-		m.notice = "nothing is queued on " + t.Name
+		m.notice = "nothing is queued on " + t.label()
 		return nil
 	}
-	return m.openConfirm(fmt.Sprintf("Remove all %d queued job(s) from the queue of %q? The run in progress is not affected.", n, t.Name), func(m *Model) tea.Cmd {
-		m.clearPending(t.Name)
+	return m.openConfirm(fmt.Sprintf("Remove all %d queued job(s) from the queue of %q? The run in progress is not affected.", n, t.label()), func(m *Model) tea.Cmd {
+		m.clearPending(t.ref)
 		return nil
 	})
 }
 
 // clearPending empties the target's queue and puts the cursor on its run,
 // since the queued row it may have been on is gone.
-func (m *Model) clearPending(target string) {
-	st := m.state(target)
-	n, err := m.bg.ClearQueue(target)
+func (m *Model) clearPending(ref domain.TargetRef) {
+	st := m.state(ref)
+	n, err := m.bg.ClearQueue(ref)
 	if err != nil {
 		m.notice = "clear queue: " + err.Error()
 		return
 	}
 	st.pending = nil
 	for i, it := range m.processItems() {
-		if it.target.Name == target && it.queued < 0 {
+		if it.target.ref == ref && it.queued < 0 {
 			m.prcur = i
 			break
 		}
 	}
 	st.addLog(fmt.Sprintf("－ removed %d job(s) from the queue", n))
-	m.notice = fmt.Sprintf("removed %d queued job(s) from %s", n, target)
+	m.notice = fmt.Sprintf("removed %d queued job(s) from %s", n, ref)
 }
 
 // removeQueued asks for confirmation, then takes the idx'th queued job off the
 // target's queue. The run in progress is not affected.
-func (m *Model) removeQueued(t domain.Target, idx int) tea.Cmd {
-	st := m.state(t.Name)
+func (m *Model) removeQueued(t row, idx int) tea.Cmd {
+	st := m.state(t.ref)
 	if idx >= len(st.pending) || m.bg == nil {
 		return nil
 	}
 	job := st.pending[idx]
-	return m.openConfirm(fmt.Sprintf("Remove the queued %s from the queue of %q? The run in progress is not affected.", jobLabel(job), t.Name), func(m *Model) tea.Cmd {
-		m.dequeue(t.Name, idx, job)
+	return m.openConfirm(fmt.Sprintf("Remove the queued %s from the queue of %q? The run in progress is not affected.", jobLabel(job), t.label()), func(m *Model) tea.Cmd {
+		m.dequeue(t.ref, idx, job)
 		return nil
 	})
 }
 
 // dequeue takes the job at position idx off the target's queue. The position,
 // not just the job, identifies it: the same job may be queued more than once.
-func (m *Model) dequeue(target string, idx int, job domain.Job) {
-	st := m.state(target)
-	if err := m.bg.Dequeue(target, idx, job); err != nil {
+func (m *Model) dequeue(ref domain.TargetRef, idx int, job domain.Job) {
+	st := m.state(ref)
+	if err := m.bg.Dequeue(ref, idx, job); err != nil {
 		m.notice = "remove: " + err.Error()
 		return
 	}
@@ -393,18 +393,18 @@ func (m *Model) dequeue(target string, idx int, job domain.Job) {
 // migration being executed is stopped where it is: a transaction is rolled
 // back, but finished passes of a repeat block stay and the migration is left
 // dirty, to be redone or cleared.
-func (m *Model) cancelRun(t domain.Target) tea.Cmd {
-	st := m.state(t.Name)
+func (m *Model) cancelRun(t row) tea.Cmd {
+	st := m.state(t.ref)
 	switch {
 	case !st.running:
-		m.notice = t.Name + " has no run in progress"
+		m.notice = t.label() + " has no run in progress"
 		return nil
 	case st.cancelling:
-		m.notice = "already cancelling the run on " + t.Name
+		m.notice = "already cancelling the run on " + t.label()
 		return nil
 	}
-	return m.openConfirm(fmt.Sprintf("Cancel the %s run on %q? The migration being executed is stopped where it is: a transaction is rolled back, but finished passes of a repeat block stay and the migration is left dirty. Migrations not started yet are skipped.", st.job.Op, t.Name), func(m *Model) tea.Cmd {
-		m.stopRun(t.Name)
+	return m.openConfirm(fmt.Sprintf("Cancel the %s run on %q? The migration being executed is stopped where it is: a transaction is rolled back, but finished passes of a repeat block stay and the migration is left dirty. Migrations not started yet are skipped.", st.job.Op, t.label()), func(m *Model) tea.Cmd {
+		m.stopRun(t.ref)
 		return nil
 	})
 }
@@ -412,14 +412,14 @@ func (m *Model) cancelRun(t domain.Target) tea.Cmd {
 // stopRun cancels the target's run: by asking its background worker, or by
 // cancelling the context of the run in this process. The run reports its end
 // like any other, flagged as cancelled.
-func (m *Model) stopRun(target string) {
-	st := m.state(target)
+func (m *Model) stopRun(ref domain.TargetRef) {
+	st := m.state(ref)
 	if !st.running || st.cancelling {
 		return
 	}
 	switch {
 	case m.bg != nil:
-		if err := m.bg.Stop(target); err != nil {
+		if err := m.bg.Stop(ref); err != nil {
 			m.notice = "cancel: " + err.Error()
 			return
 		}

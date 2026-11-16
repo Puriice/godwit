@@ -10,23 +10,26 @@ import (
 	"strings"
 
 	"github.com/puriice/godwit/internal/app"
+	"github.com/puriice/godwit/internal/domain"
 )
 
 // TranslateUsage documents "godwit translate".
-const TranslateUsage = `usage: godwit translate goose [--dry-run] [--table NAME] [target...]
+const TranslateUsage = `usage: godwit translate goose [-s SERVICE] [--dry-run] [--table NAME] [target...]
 
   goose  move a project from pressly/goose to godwit:
            - adds a "-- +godwit" directive next to every "-- +goose" one in the
              migration files; the goose directives stay, so both tools keep working
-           - records the versions goose has applied in each target's
-             godwit_migration table; the goose table is only read
+           - records the versions goose has applied in each target's godwit
+             state table; the goose table is only read
 
   --dry-run     show what would change and write nothing
   --table NAME  goose's version table (default goose_db_version; schema.table works)
 
 Without target names, enabled targets are used. Running it again is harmless:
-converted files and recorded versions are skipped.
-`
+converted files and recorded versions are skipped. In a workspace, each
+service's files are translated and imported into that service's state table.
+
+` + ServiceFlagUsage
 
 // Translate runs "godwit translate ...". args excludes the leading "translate".
 func Translate(ctx context.Context, svc *app.Service, args []string, out io.Writer) error {
@@ -39,40 +42,52 @@ func Translate(ctx context.Context, svc *app.Service, args []string, out io.Writ
 	}
 
 	var dryRun bool
+	var services serviceFlag
 	table := app.DefaultForeignTable(tool)
-	fs := flag.NewFlagSet("translate "+tool, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&dryRun, "dry-run", false, "")
-	fs.StringVar(&table, "table", table, "")
-	if err := fs.Parse(args[1:]); err != nil {
-		return fmt.Errorf("translate %s: %v\n\n%s", tool, err, TranslateUsage)
-	}
-
-	names, err := selectTargets(svc, fs.Args())
-	if err != nil {
-		return err
-	}
-
-	files, err := svc.TranslateFiles(tool, dryRun)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "== migration files (%s) ==\n", svc.MigrationsLocation())
-	failedFiles := printFiles(out, files, dryRun)
-
-	err = eachTarget(names, out, func(name string) error {
-		res, err := svc.TranslateState(ctx, name, tool, table, files, dryRun)
-		if err != nil {
-			return err
-		}
-		printState(out, tool, table, res, dryRun)
-		return nil
+	rest, err := parseCmdFlags("translate "+tool, TranslateUsage, args[1:], func(fs *flag.FlagSet) {
+		fs.BoolVar(&dryRun, "dry-run", false, "")
+		fs.StringVar(&table, "table", table, "")
+		services.define(fs)
 	})
-	if failedFiles > 0 {
-		ferr := fmt.Errorf("%d migration file(s) could not be converted", failedFiles)
-		return errors.Join(ferr, err)
+	if err != nil {
+		return err
 	}
-	return err
+
+	refs, err := selectRefs(svc, services, rest)
+	if err != nil {
+		return err
+	}
+
+	failedFiles := 0
+	var errs []error
+	for _, service := range refServices(refs) {
+		files, err := svc.TranslateFiles(service, tool, dryRun)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		fmt.Fprintln(out, filesHeading(svc, service))
+		failedFiles += printFiles(out, files, dryRun)
+
+		var mine []domain.TargetRef
+		for _, r := range refs {
+			if r.Service == service {
+				mine = append(mine, r)
+			}
+		}
+		errs = append(errs, eachTarget(mine, out, func(ref domain.TargetRef) error {
+			res, err := svc.TranslateState(ctx, ref, tool, table, files, dryRun)
+			if err != nil {
+				return err
+			}
+			printState(out, tool, table, res, dryRun)
+			return nil
+		}))
+	}
+	if failedFiles > 0 {
+		errs = append([]error{fmt.Errorf("%d migration file(s) could not be converted", failedFiles)}, errs...)
+	}
+	return errors.Join(errs...)
 }
 
 func printFiles(out io.Writer, files []app.TranslatedFile, dryRun bool) (failed int) {

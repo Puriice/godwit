@@ -19,6 +19,7 @@ export default defineConfig({
         text: 'Guides',
         items: [
           { text: 'Getting started', link: '/guides/getting-started' },
+          { text: 'Monorepos and services', link: '/guides/monorepos' },
           { text: 'Migration files', link: '/guides/migration-files' },
           { text: 'Batch processing', link: '/guides/batch-processing' },
           { text: 'Migrating from goose', link: '/guides/migrating-from-goose' },

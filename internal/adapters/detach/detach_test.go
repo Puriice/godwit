@@ -16,7 +16,7 @@ import (
 // seed records a run the way Start does, minus spawning the process.
 func seed(t *testing.T, r *Runner, j domain.Job, pid int) {
 	t.Helper()
-	pidFile, logFile := r.paths(j.Target)
+	pidFile, logFile := r.paths(j.Ref())
 	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestWorkerLogIsPolled(t *testing.T) {
 	job := domain.Job{Target: "prod", Op: domain.OpUp, N: 2}
 	seed(t, r, job, os.Getpid())
 
-	st, err := r.Poll("prod", 0)
+	st, err := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestWorkerLogIsPolled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err = r.Poll("prod", 0)
+	st, err = r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestWorkerLogIsPolled(t *testing.T) {
 		t.Fatalf("after the worker: %+v", st)
 	}
 	// Following from the returned offset yields nothing new.
-	if again, _ := r.Poll("prod", st.Next); len(again.Lines) != 0 {
+	if again, _ := r.Poll(domain.TargetRef{Target: "prod"}, st.Next); len(again.Lines) != 0 {
 		t.Fatalf("re-read lines: %v", again.Lines)
 	}
 }
@@ -75,7 +75,7 @@ func TestWorkerRecordsFailure(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if !st.Done || st.Err != "7_x: syntax error" {
 		t.Fatalf("status: %+v", st)
 	}
@@ -83,7 +83,7 @@ func TestWorkerRecordsFailure(t *testing.T) {
 
 func TestNoRunReportsNothing(t *testing.T) {
 	r := &Runner{root: t.TempDir()}
-	st, err := r.Poll("prod", 0)
+	st, err := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if err != nil || st.Active || st.Done || st.Job.Op != "" {
 		t.Fatalf("got %+v, %v", st, err)
 	}
@@ -92,7 +92,7 @@ func TestNoRunReportsNothing(t *testing.T) {
 func TestDeadWorkerIsNotActive(t *testing.T) {
 	r := &Runner{root: t.TempDir()}
 	seed(t, r, domain.Job{Target: "prod", Op: domain.OpUp}, 1<<30)
-	if st, _ := r.Poll("prod", 0); st.Active || st.Done {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); st.Active || st.Done {
 		t.Fatalf("status: %+v", st)
 	}
 }
@@ -113,16 +113,16 @@ func TestStopCancelsTheRunningWorker(t *testing.T) {
 	}()
 	<-started
 
-	if err := r.Stop("prod"); err != nil {
+	if err := r.Stop(domain.TargetRef{Target: "prod"}); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := r.Poll("prod", 0); !st.Cancelling {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); !st.Cancelling {
 		t.Errorf("not reported as cancelling: %+v", st)
 	}
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("worker error = %v", err)
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if !st.Done || !st.Cancelled || st.Count != 1 || st.Err == "" || st.Cancelling {
 		t.Errorf("after cancel: %+v", st)
 	}
@@ -130,7 +130,7 @@ func TestStopCancelsTheRunningWorker(t *testing.T) {
 
 func TestStopWithoutARunFails(t *testing.T) {
 	r := &Runner{root: t.TempDir()}
-	if err := r.Stop("prod"); err == nil {
+	if err := r.Stop(domain.TargetRef{Target: "prod"}); err == nil {
 		t.Error("want an error when nothing is running")
 	}
 }
@@ -176,7 +176,7 @@ func TestStartQueuesBehindARunningWorker(t *testing.T) {
 	if queued, err := r.Start(down); err != nil || !queued {
 		t.Fatalf("second Start = %v, %v; want queued", queued, err)
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if len(st.Pending) != 2 || st.Pending[0] != redo || st.Pending[1] != down {
 		t.Fatalf("pending = %+v", st.Pending)
 	}
@@ -195,22 +195,22 @@ func TestDequeueRemovesOnlyThatJob(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.Dequeue("prod", 0, redo); err != nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 0, redo); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := r.Poll("prod", 0); len(st.Pending) != 1 || st.Pending[0] != down {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); len(st.Pending) != 1 || st.Pending[0] != down {
 		t.Fatalf("pending = %+v", st.Pending)
 	}
-	if err := r.Dequeue("prod", 0, redo); err == nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 0, redo); err == nil {
 		t.Error("want an error for a job that is not at that position")
 	}
-	if err := r.Dequeue("prod", 5, down); err == nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 5, down); err == nil {
 		t.Error("want an error for a position past the end")
 	}
-	if err := r.Dequeue("prod", 0, down); err != nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 0, down); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := r.Poll("prod", 0); len(st.Pending) != 0 {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); len(st.Pending) != 0 {
 		t.Errorf("pending = %+v", st.Pending)
 	}
 }
@@ -226,15 +226,15 @@ func TestClearQueueEmptiesItAndLeavesTheRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	n, err := r.ClearQueue("prod")
+	n, err := r.ClearQueue(domain.TargetRef{Target: "prod"})
 	if err != nil || n != 2 {
 		t.Fatalf("ClearQueue = %d, %v; want 2", n, err)
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if len(st.Pending) != 0 || !st.Active || st.Job.Op != domain.OpUp {
 		t.Errorf("status: %+v", st)
 	}
-	if n, err := r.ClearQueue("prod"); err != nil || n != 0 {
+	if n, err := r.ClearQueue(domain.TargetRef{Target: "prod"}); err != nil || n != 0 {
 		t.Errorf("clearing an empty queue = %d, %v", n, err)
 	}
 }
@@ -250,20 +250,20 @@ func TestDequeueRemovesTheSelectedDuplicate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.Dequeue("prod", 2, a); err != nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 2, a); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if len(st.Pending) != 2 || st.Pending[0] != a || st.Pending[1] != b {
 		t.Fatalf("pending = %+v, want A then B", st.Pending)
 	}
 
 	// A position that moved on (the worker took the first job meanwhile)
 	// must not remove a different job.
-	if err := r.Dequeue("prod", 1, a); err == nil {
+	if err := r.Dequeue(domain.TargetRef{Target: "prod"}, 1, a); err == nil {
 		t.Error("removed something at a position that no longer holds that job")
 	}
-	if st, _ := r.Poll("prod", 0); len(st.Pending) != 2 {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); len(st.Pending) != 2 {
 		t.Errorf("pending = %+v", st.Pending)
 	}
 }
@@ -287,7 +287,7 @@ func TestWorkerHandsOverToTheNextQueuedJob(t *testing.T) {
 	if err == nil {
 		t.Fatal("want the failure to start the queued run")
 	}
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	// The next run starts a fresh log, so the end of this one is gone.
 	if len(st.Lines) != 1 || !strings.Contains(st.Lines[0], "could not start the queued run") {
 		t.Errorf("the failure is not logged: %v", st.Lines)
@@ -307,7 +307,7 @@ func TestFailureDropsTheQueue(t *testing.T) {
 	_ = r.RunWorker(context.Background(), job.Args(), func(context.Context, domain.Job, app.Progress) (int, error) {
 		return 0, errors.New("boom")
 	})
-	st, _ := r.Poll("prod", 0)
+	st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0)
 	if len(st.Pending) != 0 || st.More || !st.Done {
 		t.Errorf("status: %+v", st)
 	}
@@ -323,7 +323,7 @@ func TestAFailureIsNotCancelled(t *testing.T) {
 	_ = r.RunWorker(context.Background(), job.Args(), func(context.Context, domain.Job, app.Progress) (int, error) {
 		return 0, errors.New("boom")
 	})
-	if st, _ := r.Poll("prod", 0); !st.Done || st.Cancelled || st.Err != "boom" {
+	if st, _ := r.Poll(domain.TargetRef{Target: "prod"}, 0); !st.Done || st.Cancelled || st.Err != "boom" {
 		t.Errorf("status: %+v", st)
 	}
 }

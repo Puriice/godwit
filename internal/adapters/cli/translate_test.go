@@ -36,7 +36,7 @@ func TestTranslateDryRunLeavesFilesAlone(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "001_x.sql"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files, err := svc.TranslateFiles("goose", true)
+	files, err := svc.TranslateFiles("", "goose", true)
 	if err != nil || len(files) != 1 || files[0].Status != "converted" || files[0].Checksum == "" {
 		t.Fatalf("files = %+v, %v", files, err)
 	}

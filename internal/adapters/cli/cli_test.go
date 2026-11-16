@@ -18,7 +18,7 @@ import (
 type noDBs struct{}
 
 func (noDBs) Drivers() []string { return []string{"mysql", "postgres"} }
-func (noDBs) Open(context.Context, domain.Target, string) (app.Database, error) {
+func (noDBs) Open(context.Context, domain.Target, string, string) (app.Database, error) {
 	return nil, errors.New("no database in tests")
 }
 
@@ -40,12 +40,12 @@ func TestAuthAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := svc.Target("prod")
+	got, ok := svc.Target(domain.TargetRef{Target: "prod"})
 	if !ok || got.Host != "db.example.com" || got.Port != 5433 || got.Database != "shop" || got.User != "app" ||
 		got.Params["sslmode"] != "disable" {
 		t.Fatalf("target = %+v", got)
 	}
-	if !svc.HasPassword("prod") {
+	if !svc.HasPassword(domain.TargetRef{Target: "prod"}) {
 		t.Error("password not stored")
 	}
 
@@ -67,7 +67,7 @@ func TestAuthAddWithoutPasswordAndMySQLDSN(t *testing.T) {
 	if err := Auth(svc, []string{"add", "staging", "mysql", "u@tcp(h:3306)/d"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if svc.HasPassword("staging") {
+	if svc.HasPassword(domain.TargetRef{Target: "staging"}) {
 		t.Error("no password was given")
 	}
 	if !strings.Contains(out.String(), "ask for it") {
@@ -142,10 +142,10 @@ func TestAuthRemove(t *testing.T) {
 	if !strings.Contains(out.String(), `"drop"`) || strings.Contains(out.String(), "dropsecret") {
 		t.Errorf("output = %q", out.String())
 	}
-	if _, ok := svc.Target("drop"); ok {
+	if _, ok := svc.Target(domain.TargetRef{Target: "drop"}); ok {
 		t.Error("target still present")
 	}
-	if _, ok := svc.Target("keep"); !ok || !svc.HasPassword("keep") {
+	if _, ok := svc.Target(domain.TargetRef{Target: "keep"}); !ok || !svc.HasPassword(domain.TargetRef{Target: "keep"}) {
 		t.Error("other target or its password was affected")
 	}
 
@@ -167,8 +167,8 @@ func TestAuthRemove(t *testing.T) {
 			t.Errorf("%v: expected error", args)
 		}
 	}
-	if len(svc.Targets()) != 1 {
-		t.Errorf("failed commands changed the target list: %+v", svc.Targets())
+	if len(svc.ScopeTargets("")) != 1 {
+		t.Errorf("failed commands changed the target list: %+v", svc.ScopeTargets(""))
 	}
 }
 
@@ -187,10 +187,10 @@ func TestEnableDisable(t *testing.T) {
 	if err := Auth(svc, []string{"disable", "prod"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := svc.Target("prod"); !got.Disabled {
+	if got, _ := svc.Target(domain.TargetRef{Target: "prod"}); !got.Disabled {
 		t.Fatal("prod not disabled")
 	}
-	if got, _ := svc.Target("stg"); got.Disabled {
+	if got, _ := svc.Target(domain.TargetRef{Target: "stg"}); got.Disabled {
 		t.Error("stg should be unaffected")
 	}
 	if !strings.Contains(out.String(), "Disabled") || !strings.Contains(out.String(), "auth enable prod") {
@@ -210,7 +210,7 @@ func TestEnableDisable(t *testing.T) {
 	if !strings.Contains(list.String(), "(disabled)") || !strings.Contains(list.String(), "(no password)") {
 		t.Errorf("list:\n%s", list.String())
 	}
-	svc.SetTargetEnabled("stg", false)
+	svc.SetTargetEnabled(domain.TargetRef{Target: "stg"}, false)
 	list.Reset()
 	Auth(svc, []string{"list"}, &list)
 	if !strings.Contains(list.String(), "(disabled, no password)") {
@@ -227,7 +227,7 @@ func TestEnableDisable(t *testing.T) {
 	if err := Auth(svc, []string{"enable", "prod"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := svc.Target("prod"); got.Disabled || !strings.Contains(out.String(), "Enabled") {
+	if got, _ := svc.Target(domain.TargetRef{Target: "prod"}); got.Disabled || !strings.Contains(out.String(), "Enabled") {
 		t.Errorf("enable: %+v %q", got, out.String())
 	}
 	out.Reset()
@@ -264,7 +264,7 @@ func TestAuthAddErrors(t *testing.T) {
 			}
 		})
 	}
-	if n := len(svc.Targets()); n != 0 {
+	if n := len(svc.ScopeTargets("")); n != 0 {
 		t.Errorf("failed commands added %d targets", n)
 	}
 

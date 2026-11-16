@@ -49,6 +49,11 @@ type pluginJSON struct {
 }
 
 type configJSON struct {
+	// Service names this directory as a service of a workspace.
+	Service string `json:"service,omitempty"`
+	// Services lists a workspace's service directories (root only).
+	Services []string `json:"services,omitempty"`
+
 	MigrationsDir string       `json:"migrationsDir"`
 	Targets       []targetJSON `json:"targets"`
 	Plugins       []pluginJSON `json:"plugins,omitempty"`
@@ -59,14 +64,28 @@ type configJSON struct {
 // Store implements app.ProjectStore.
 type Store struct {
 	root string // directory containing .godwit
+	// keyPrefix goes between GODWIT_ and the target in password variable
+	// names: "USERS_" for the targets of service users, empty otherwise.
+	keyPrefix string
 
 	mu      sync.Mutex
 	secrets map[string]string // from .env, plus session-only passwords
 }
 
-// New returns a Store for the project at root.
+// New returns a Store for the project (or workspace root) at root.
 func New(root string) *Store {
 	return &Store{root: root, secrets: map[string]string{}}
+}
+
+// NewService returns a Store for the service of a workspace kept in dir. The
+// passwords of its targets are named GODWIT_<SERVICE>_<TARGET>_PASSWORD, so
+// they never clash with the workspace's global targets or other services.
+func NewService(dir, service string) *Store {
+	s := New(dir)
+	if service != "" {
+		s.keyPrefix = envName(service) + "_"
+	}
+	return s
 }
 
 func (s *Store) dir() string { return filepath.Join(s.root, DirName) }
@@ -78,13 +97,12 @@ func (s *Store) Load() (domain.Project, error) {
 	defer s.mu.Unlock()
 
 	var p domain.Project
-	raw, err := os.ReadFile(filepath.Join(s.dir(), configFile))
+	c, found, err := readConfig(s.root)
 	switch {
-	case err == nil:
-		var c configJSON
-		if err := json.Unmarshal(raw, &c); err != nil {
-			return p, fmt.Errorf("%s: %w", configFile, err)
-		}
+	case err != nil:
+		return p, err
+	case found:
+		p.Service, p.Services = c.Service, c.Services
 		p.MigrationsDir = c.MigrationsDir
 		p.DisabledMigrations = c.DisabledMigrations
 		for _, t := range c.Targets {
@@ -93,8 +111,6 @@ func (s *Store) Load() (domain.Project, error) {
 		for _, pl := range c.Plugins {
 			p.Plugins = append(p.Plugins, domain.PluginSpec(pl))
 		}
-	case !errors.Is(err, os.ErrNotExist):
-		return p, err
 	}
 
 	env, err := godotenv.Read(filepath.Join(s.dir(), envFile))
@@ -115,7 +131,7 @@ func (s *Store) Save(p domain.Project) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return err
 	}
-	c := configJSON{MigrationsDir: p.MigrationsDir, Targets: []targetJSON{}, DisabledMigrations: p.DisabledMigrations}
+	c := configJSON{Service: p.Service, Services: p.Services, MigrationsDir: p.MigrationsDir, Targets: []targetJSON{}, DisabledMigrations: p.DisabledMigrations}
 	for _, t := range p.Targets {
 		c.Targets = append(c.Targets, targetJSON(t))
 	}
@@ -150,17 +166,46 @@ func (s *Store) ensureGitignore() error {
 	return os.WriteFile(path, []byte(out+envFile+"\n"), 0o644)
 }
 
+// readConfig reads the config.json in dir's .godwit directory. found is false
+// when there is none.
+func readConfig(dir string) (c configJSON, found bool, err error) {
+	raw, err := os.ReadFile(filepath.Join(dir, DirName, configFile))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return c, false, nil
+	case err != nil:
+		return c, false, err
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return c, false, fmt.Errorf("%s: %w", filepath.Join(dir, DirName, configFile), err)
+	}
+	return c, true, nil
+}
+
 var nonAlnum = regexp.MustCompile(`[^A-Z0-9]+`)
 
-// PasswordKey is the env var name holding a target's password.
+// envName turns a name into the upper-case, underscore-separated form used in
+// environment variable names.
+func envName(name string) string {
+	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToUpper(name), "_"), "_")
+}
+
+// PasswordKey is the env var name holding the password of a target in a plain
+// project, or a global target of a workspace.
 func PasswordKey(target string) string {
-	return "GODWIT_" + strings.Trim(nonAlnum.ReplaceAllString(strings.ToUpper(target), "_"), "_") + "_PASSWORD"
+	return "GODWIT_" + envName(target) + "_PASSWORD"
+}
+
+// PasswordKey is the env var name holding the password of one of this store's
+// targets.
+func (s *Store) PasswordKey(target string) string {
+	return "GODWIT_" + s.keyPrefix + envName(target) + "_PASSWORD"
 }
 
 // Password resolves a target's password. The process environment overrides
 // .env, so CI works without a file.
 func (s *Store) Password(target string) (string, bool) {
-	key := PasswordKey(target)
+	key := s.PasswordKey(target)
 	if v, found := os.LookupEnv(key); found {
 		return v, true
 	}
@@ -176,7 +221,7 @@ func (s *Store) SetPassword(target, pw string, persist bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := PasswordKey(target)
+	key := s.PasswordKey(target)
 	s.secrets[key] = pw
 	if !persist {
 		return nil
@@ -206,7 +251,7 @@ func (s *Store) DeletePassword(target string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := PasswordKey(target)
+	key := s.PasswordKey(target)
 	delete(s.secrets, key)
 
 	path := filepath.Join(s.dir(), envFile)

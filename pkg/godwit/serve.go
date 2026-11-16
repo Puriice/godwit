@@ -93,6 +93,8 @@ type wireTarget struct {
 	Database string            `json:"database,omitempty"`
 	User     string            `json:"user,omitempty"`
 	Params   map[string]string `json:"params,omitempty"`
+	// Table travels beside the target, in the "table" parameter of open.
+	Table string `json:"-"`
 }
 
 type wireRecord struct {
@@ -167,7 +169,12 @@ func (s *server) dispatch(req request) (any, error) {
 		if s.conn != nil {
 			return nil, errors.New("already open")
 		}
-		c, err := s.d.Open(ctx, fromWire(p.Target), p.Password)
+		t := fromWire(p.Target)
+		t.Table = p.Table
+		if t.Table == "" { // sent by a godwit that predates protocol 2
+			t.Table = defaultTable
+		}
+		c, err := s.d.Open(ctx, t, p.Password)
 		if err != nil {
 			return nil, err
 		}
@@ -268,6 +275,9 @@ func (s *server) release() error {
 }
 
 func (s *server) shutdown() { s.release() } //nolint:errcheck // nowhere left to report it
+
+// defaultTable is the state table of a plain project.
+const defaultTable = "godwit_migration"
 
 func toWire(t Target) wireTarget { return wireTarget(t) }
 

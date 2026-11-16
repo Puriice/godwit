@@ -14,7 +14,7 @@ import (
 type pluginFactory struct{ opened int }
 
 func (*pluginFactory) Drivers() []string { return []string{"sqlite"} }
-func (p *pluginFactory) Open(context.Context, domain.Target, string) (Database, error) {
+func (p *pluginFactory) Open(context.Context, domain.Target, string, string) (Database, error) {
 	p.opened++
 	return newFakeDB(), nil
 }
@@ -38,13 +38,13 @@ func TestCombineMergesAndDispatches(t *testing.T) {
 	if got := c.Drivers(); !slices.Equal(got, []string{"mysql", "postgres", "sqlite"}) {
 		t.Errorf("drivers = %v", got)
 	}
-	if _, err := c.Open(context.Background(), domain.Target{Driver: "SQLite"}, ""); err != nil || plug.opened != 1 {
+	if _, err := c.Open(context.Background(), domain.Target{Driver: "SQLite"}, "", "godwit_migration"); err != nil || plug.opened != 1 {
 		t.Errorf("sqlite should open via the plugin factory: err=%v opened=%d", err, plug.opened)
 	}
-	if _, err := c.Open(context.Background(), domain.Target{Driver: "postgres"}, ""); err != nil {
+	if _, err := c.Open(context.Background(), domain.Target{Driver: "postgres"}, "", "godwit_migration"); err != nil {
 		t.Error(err)
 	}
-	if _, err := c.Open(context.Background(), domain.Target{Driver: "oracle"}, ""); err == nil || !strings.Contains(err.Error(), "available: mysql, postgres, sqlite") {
+	if _, err := c.Open(context.Background(), domain.Target{Driver: "oracle"}, "", "godwit_migration"); err == nil || !strings.Contains(err.Error(), "available: mysql, postgres, sqlite") {
 		t.Errorf("unknown driver error = %v", err)
 	}
 	if d, ok := c.(DriverDescriber); !ok || len(d.DriverInfos()) != 1 {
@@ -73,18 +73,18 @@ func TestServiceKnowsPluginDrivers(t *testing.T) {
 
 	// A target with no host or user is fine for a no-host plugin driver.
 	tg.Name = "local"
-	if err := svc.AddTarget(tg, "", false); err != nil {
+	if err := svc.AddTarget("", tg, "", false); err != nil {
 		t.Fatal(err)
 	}
 	// File based drivers have no password, and must not be blocked for lacking one.
-	if svc.NeedsPassword("local") || len(svc.TargetsMissingPassword()) != 0 {
+	if svc.NeedsPassword(ref("local")) || len(svc.TargetsMissingPassword()) != 0 {
 		t.Error("no-host driver should not need a password")
 	}
-	if _, err := svc.Status(context.Background(), "local"); err != nil {
+	if _, err := svc.Status(context.Background(), ref("local")); err != nil {
 		t.Errorf("status without password: %v", err)
 	}
 	// Aliases are accepted when validating.
-	if err := svc.AddTarget(domain.Target{Name: "other", Driver: "SQLite3"}, "", false); err != nil {
+	if err := svc.AddTarget("", domain.Target{Name: "other", Driver: "SQLite3"}, "", false); err != nil {
 		t.Errorf("alias target: %v", err)
 	}
 }

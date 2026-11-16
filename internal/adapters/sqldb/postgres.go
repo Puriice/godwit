@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/url"
 	"strconv"
@@ -13,8 +14,22 @@ import (
 	"github.com/puriice/godwit/internal/domain"
 )
 
-// pgLockKey is the advisory lock id ("godwit" as bytes, fits in int64).
+// pgLockKey is the advisory lock id of the default state table ("godwit" as
+// bytes, fits in int64).
 const pgLockKey int64 = 0x676f64776974
+
+// pgLockKeyFor returns the advisory lock id guarding table. The default table
+// keeps pgLockKey, so runs of older godwit versions still exclude each other;
+// other tables (one per workspace service) get their own id, so services that
+// share a database do not wait for one another.
+func pgLockKeyFor(table string) int64 {
+	if table == Table {
+		return pgLockKey
+	}
+	h := fnv.New64a()
+	h.Write([]byte(table)) //nolint:errcheck // never fails
+	return int64(h.Sum64())
+}
 
 func postgresDSN(t domain.Target, password string) string {
 	port := t.Port
@@ -48,7 +63,8 @@ func openPostgres(ctx context.Context, t domain.Target, password string) (*conn,
 		name:          "postgres",
 		placeholder:   func(n int) string { return fmt.Sprintf("$%d", n) },
 		transactional: true,
-		createTable: `CREATE TABLE IF NOT EXISTS ` + Table + ` (
+		createTable: func(table string) string {
+			return `CREATE TABLE IF NOT EXISTS ` + table + ` (
 	version     BIGINT      PRIMARY KEY,
 	name        TEXT        NOT NULL,
 	checksum    CHAR(64)    NOT NULL,
@@ -56,13 +72,15 @@ func openPostgres(ctx context.Context, t domain.Target, password string) (*conn,
 	duration_ms BIGINT      NOT NULL DEFAULT 0,
 	dirty       BOOLEAN     NOT NULL DEFAULT FALSE,
 	batch       BIGINT      NOT NULL DEFAULT 0
-)`,
-		lock: func(ctx context.Context, c *sql.Conn) (func() error, error) {
-			if _, err := c.ExecContext(ctx, "SELECT pg_advisory_lock($1)", pgLockKey); err != nil {
+)`
+		},
+		lock: func(ctx context.Context, c *sql.Conn, table string) (func() error, error) {
+			key := pgLockKeyFor(table)
+			if _, err := c.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
 				return nil, err
 			}
 			return func() error {
-				_, err := c.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", pgLockKey)
+				_, err := c.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
 				return err
 			}, nil
 		},

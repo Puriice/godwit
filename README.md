@@ -8,10 +8,13 @@ migration files can serve both.
 - **One file per migration**, with optional per-engine SQL blocks.
 - **State lives in each database**, in a `godwit_migration` table, so every
   target tracks its own progress.
+- **Monorepos:** each service keeps its own migrations and targets, and global
+  targets let services share a development database. Each service records its
+  state in its own `godwit_migration_<service>` table.
 - **TUI and CLI:** every action in the TUI also exists as a command, for scripts and CI (except the debug panel).
 - **Runs survive quitting:** the TUI runs migrations in a detached worker process, so
   quitting (even closing the terminal) doesn't interrupt them. Progress is logged in
-  `.godwit/runs/<target>.log`.
+  `.godwit/runs/<target>.log` (`.godwit/runs/<service>/<target>.log` in a workspace).
 - **Safe by default:** checksums detect edited migrations, locks stop concurrent
   runs, and a failed run is flagged until you resolve it.
 
@@ -55,6 +58,7 @@ DROP TABLE users;
 Full documentation is at **<https://puriice.github.io/godwit/>**:
 
 - [Getting started](https://puriice.github.io/godwit/guides/getting-started/): connection strings and project configuration
+- [Monorepos and services](https://puriice.github.io/godwit/guides/monorepos/): per-service migrations and shared databases
 - [Migration files](https://puriice.github.io/godwit/guides/migration-files/): directives and per-driver blocks
 - [Batch processing](https://puriice.github.io/godwit/guides/batch-processing/): backfill big tables in repeated passes
 - [Migrating from goose](https://puriice.github.io/godwit/guides/migrating-from-goose/): `godwit translate goose`

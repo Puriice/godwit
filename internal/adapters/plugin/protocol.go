@@ -10,7 +10,13 @@ import (
 )
 
 // ProtocolVersion is the plugin protocol version this build speaks.
-const ProtocolVersion = 1
+// Version 2 added the state table name to "open".
+const ProtocolVersion = 2
+
+// minProtocol is the oldest protocol version still accepted. A protocol 1
+// plugin ignores the table in "open" and always uses godwit_migration, so it
+// can serve a plain project but not a workspace service.
+const minProtocol = 1
 
 // One JSON object per line in each direction. godwit sends requests and the
 // plugin answers each with exactly one response carrying the same id.
@@ -62,6 +68,8 @@ type parseResult struct {
 type openParams struct {
 	Target   wireTarget `json:"target"`
 	Password string     `json:"password,omitempty"`
+	// Table is the state table the connection owns (protocol 2).
+	Table string `json:"table"`
 }
 
 type wireMigration struct {

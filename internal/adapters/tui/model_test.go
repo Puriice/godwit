@@ -18,8 +18,11 @@ import (
 // noDBs is a DatabaseFactory for tests that never reach a database.
 type noDBs struct{}
 
+// ref names a target of a plain project.
+func ref(name string) domain.TargetRef { return domain.TargetRef{Target: name} }
+
 func (noDBs) Drivers() []string { return []string{"mysql", "postgres"} }
-func (noDBs) Open(context.Context, domain.Target, string) (app.Database, error) {
+func (noDBs) Open(context.Context, domain.Target, string, string) (app.Database, error) {
 	return nil, errors.New("no database in tests")
 }
 
@@ -32,7 +35,7 @@ func testService(t *testing.T, targets ...domain.Target) *app.Service {
 		t.Fatal(err)
 	}
 	for _, tg := range targets {
-		if err := svc.AddTarget(tg, "", false); err != nil {
+		if err := svc.AddTarget("", tg, "", false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,15 +87,15 @@ func TestNavigation(t *testing.T) {
 
 func TestToggleDisableAndEnable(t *testing.T) {
 	m := testModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	st.loaded, st.items = true, []domain.Item{{Version: 1, Name: "x", State: domain.Applied}}
 
 	// t on the targets list disables the selected target and persists it.
 	m.Update(key("t"))
-	if a, _ := m.svc.Target("a"); !a.Disabled {
+	if a, _ := m.row(ref("a")); !a.Disabled {
 		t.Fatal("a should be disabled")
 	}
-	if b, _ := m.svc.Target("b"); b.Disabled {
+	if b, _ := m.row(ref("b")); b.Disabled {
 		t.Error("b should be unaffected")
 	}
 	if st.loaded || len(st.items) != 0 {
@@ -104,7 +107,7 @@ func TestToggleDisableAndEnable(t *testing.T) {
 	}
 
 	// A disabled target is never refreshed or run.
-	a, _ := m.svc.Target("a")
+	a, _ := m.row(ref("a"))
 	if cmd := m.refresh(a); cmd != nil || st.loading {
 		t.Error("refresh must not connect to a disabled target")
 	}
@@ -124,7 +127,7 @@ func TestToggleDisableAndEnable(t *testing.T) {
 
 	// t on the migrations screen enables it again; a refresh is started.
 	_, cmd := m.Update(key("t"))
-	if a, _ := m.svc.Target("a"); a.Disabled {
+	if a, _ := m.row(ref("a")); a.Disabled {
 		t.Fatal("a should be enabled")
 	}
 	if cmd == nil || !st.loading {
@@ -134,14 +137,14 @@ func TestToggleDisableAndEnable(t *testing.T) {
 
 func TestApplyAllSkipsDisabled(t *testing.T) {
 	m := testModel(t)
-	m.svc.SetTargetEnabled("a", false)
-	m.svc.SetTargetEnabled("b", false)
+	m.svc.SetTargetEnabled(ref("a"), false)
+	m.svc.SetTargetEnabled(ref("b"), false)
 	m.Update(key("u"))
 	if m.screen == scrForm || !strings.Contains(m.notice, "no enabled") {
 		t.Errorf("screen=%v notice=%q", m.screen, m.notice)
 	}
 
-	m.svc.SetTargetEnabled("b", true)
+	m.svc.SetTargetEnabled(ref("b"), true)
 	m.Update(key("u"))
 	if m.screen != scrForm || !strings.Contains(m.formTitle, "Confirm") {
 		t.Errorf("expected a confirm form, screen=%v", m.screen)
@@ -165,11 +168,11 @@ func TestMissingPasswordQueuesCredentialForm(t *testing.T) {
 
 func TestRunMessagesUpdateState(t *testing.T) {
 	m := testModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	st.running = true
 	st.events = make(chan tea.Msg)
 
-	m.Update(statusMsg{target: "a", items: []domain.Item{
+	m.Update(statusMsg{ref: ref("a"), items: []domain.Item{
 		{Version: 1, Name: "x", State: domain.Applied},
 		{Version: 2, Name: "y", State: domain.Pending},
 	}})
@@ -177,12 +180,12 @@ func TestRunMessagesUpdateState(t *testing.T) {
 		t.Errorf("summary = %q", summarize(st.items))
 	}
 
-	m.Update(runDoneMsg{target: "a", dir: domain.Up, err: errors.New("boom")})
+	m.Update(runDoneMsg{ref: ref("a"), dir: domain.Up, err: errors.New("boom")})
 	if st.running || st.runErr == nil {
 		t.Errorf("running=%v runErr=%v", st.running, st.runErr)
 	}
 	// The status refresh after a run must not erase the run error.
-	m.Update(statusMsg{target: "a"})
+	m.Update(statusMsg{ref: ref("a")})
 	if st.runErr == nil {
 		t.Error("run error cleared by status refresh")
 	}
@@ -193,8 +196,8 @@ func TestRunMessagesUpdateState(t *testing.T) {
 
 func TestRedoSelectedMigration(t *testing.T) {
 	m := testModel(t)
-	a, _ := m.svc.Target("a")
-	st := m.state("a")
+	a, _ := m.row(ref("a"))
+	st := m.state(ref("a"))
 	rec := &domain.Record{}
 	st.loaded = true
 	st.items = []domain.Item{
@@ -255,7 +258,7 @@ func TestRedoSelectedMigration(t *testing.T) {
 	}
 
 	// A disabled target ignores space, like the other action keys.
-	m.svc.SetTargetEnabled("a", false)
+	m.svc.SetTargetEnabled(ref("a"), false)
 	m.mcur, m.notice = 0, ""
 	m.Update(key(" "))
 	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
@@ -265,8 +268,8 @@ func TestRedoSelectedMigration(t *testing.T) {
 
 func TestGoToSelectedMigration(t *testing.T) {
 	m := testModel(t)
-	a, _ := m.svc.Target("a")
-	st := m.state("a")
+	a, _ := m.row(ref("a"))
+	st := m.state(ref("a"))
 	rec := &domain.Record{}
 	st.loaded = true
 	st.items = []domain.Item{
@@ -352,7 +355,7 @@ func TestGoToSelectedMigration(t *testing.T) {
 	}
 
 	// A disabled target ignores g like the other action keys.
-	m.svc.SetTargetEnabled("a", false)
+	m.svc.SetTargetEnabled(ref("a"), false)
 	press(0)
 	if m.screen != scrMigrations || !strings.Contains(m.notice, "disabled") {
 		t.Errorf("disabled: screen=%v notice=%q", m.screen, m.notice)
@@ -363,16 +366,17 @@ func TestPanelCycling(t *testing.T) {
 	m := testModel(t)
 	left, right := tea.KeyMsg{Type: tea.KeyLeft}, tea.KeyMsg{Type: tea.KeyRight}
 
-	for _, want := range []screen{scrFiles, scrProcesses, scrPlugins, scrTargets} {
+	for _, want := range []screen{scrFiles, scrProcesses, scrPlugins, scrServices, scrTargets} {
 		m.Update(right)
 		if m.screen != want {
 			t.Fatalf("right: screen = %v, want %v", m.screen, want)
 		}
 	}
 	m.Update(left)
-	if m.screen != scrPlugins {
-		t.Fatalf("left from targets should wrap to plugins, got %v", m.screen)
+	if m.screen != scrServices {
+		t.Fatalf("left from targets should wrap to services, got %v", m.screen)
 	}
+	m.Update(left)
 	if v := m.View(); !strings.Contains(v, "[plugins]") || !strings.Contains(v, "No plugins") {
 		t.Errorf("plugins panel not shown:\n%s", v)
 	}
@@ -395,7 +399,7 @@ func TestMigrationFilesPanel(t *testing.T) {
 	if m.screen != scrFiles {
 		t.Errorf("closing the form should return to the files panel, got %v", m.screen)
 	}
-	if _, err := m.svc.CreateMigration("add_things"); err != nil {
+	if _, err := m.svc.CreateMigration("", "add_things"); err != nil {
 		t.Fatal(err)
 	}
 	if v := m.View(); !strings.Contains(v, "add_things") {
@@ -437,12 +441,12 @@ func TestPluginsPanelAddAndRemove(t *testing.T) {
 func TestMigrateAllToSelectedFile(t *testing.T) {
 	m := testModel(t)
 	for _, n := range []string{"one", "two"} {
-		if _, err := m.svc.CreateMigration(n); err != nil {
+		if _, err := m.svc.CreateMigration("", n); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(1100 * time.Millisecond) // versions are timestamps
 	}
-	migs, _ := m.svc.Migrations()
+	migs, _ := m.svc.Migrations("")
 	if len(migs) != 2 {
 		t.Fatalf("migrations = %d", len(migs))
 	}
@@ -453,11 +457,11 @@ func TestMigrateAllToSelectedFile(t *testing.T) {
 		t.Fatalf("unloaded targets should be skipped, screen %v notice %q", m.screen, m.notice)
 	}
 	// a: first pending; b: both applied, so it rolls back to the first.
-	m.state("a").loaded = true
-	m.state("a").items = []domain.Item{{Version: migs[0].Version, State: domain.Pending}, {Version: migs[1].Version, State: domain.Pending}}
+	m.state(ref("a")).loaded = true
+	m.state(ref("a")).items = []domain.Item{{Version: migs[0].Version, State: domain.Pending}, {Version: migs[1].Version, State: domain.Pending}}
 	rec := &domain.Record{}
-	m.state("b").loaded = true
-	m.state("b").items = []domain.Item{{Version: migs[0].Version, State: domain.Applied, Record: rec}, {Version: migs[1].Version, State: domain.Applied, Record: rec}}
+	m.state(ref("b")).loaded = true
+	m.state(ref("b")).items = []domain.Item{{Version: migs[0].Version, State: domain.Applied, Record: rec}, {Version: migs[1].Version, State: domain.Applied, Record: rec}}
 	m.Update(key("enter"))
 	if m.screen != scrForm {
 		t.Fatalf("enter should ask for confirmation, screen = %v", m.screen)
@@ -469,7 +473,7 @@ func TestMigrateAllToSelectedFile(t *testing.T) {
 
 func TestRollbackBatchAsksFirst(t *testing.T) {
 	m := testModel(t)
-	st := m.state("a")
+	st := m.state(ref("a"))
 	st.loaded = true
 	mk := func(v int64, batch int64, at int) domain.Item {
 		return domain.Item{Version: v, Name: "m", State: domain.Applied, Migration: &domain.Migration{Version: v},

@@ -15,9 +15,14 @@ import (
 // RunInit is `godwit init`: it asks for the migrations directory and any
 // number of targets, then saves them through the service and creates the
 // directory. Nothing is written if the user cancels. Re-running it edits the
-// existing project.
+// existing project. Inside a service of a workspace it edits that service; at
+// a workspace root, which has no migrations of its own, it refuses.
 func RunInit(svc *app.Service) error {
-	dir := svc.MigrationsDir()
+	service := svc.CurrentService()
+	if svc.IsWorkspace() && service == "" {
+		return errors.New("this is a workspace root, which has no migrations of its own: run godwit init inside a service directory, add a service with godwit service add <dir>, or add global targets with godwit auth add")
+	}
+	dir := svc.MigrationsDir(service)
 	if err := runForm(huh.NewGroup(
 		huh.NewInput().
 			Title("Migrations directory").
@@ -35,7 +40,7 @@ func RunInit(svc *app.Service) error {
 	}
 	var pending []pendingTarget
 	nameTaken := func(name string) bool {
-		if _, ok := svc.Target(name); ok {
+		if _, ok := svc.Target(domain.TargetRef{Service: service, Target: name}); ok && !svc.IsGlobal(domain.TargetRef{Service: service, Target: name}) {
 			return true
 		}
 		for _, p := range pending {
@@ -46,7 +51,7 @@ func RunInit(svc *app.Service) error {
 		return false
 	}
 
-	existing := len(svc.Targets())
+	existing := len(svc.ScopeTargets(service))
 	question := "Add a target database now?"
 	if existing > 0 {
 		question = fmt.Sprintf("Project has %d target(s). Add another?", existing)
@@ -70,18 +75,22 @@ func RunInit(svc *app.Service) error {
 		question = "Add another target?"
 	}
 
-	if err := svc.SetMigrationsDir(strings.TrimSpace(dir)); err != nil {
+	if err := svc.SetMigrationsDir(service, strings.TrimSpace(dir)); err != nil {
 		return err
 	}
 	for _, p := range pending {
-		if err := svc.AddTarget(p.t, p.pw, p.persist); err != nil {
+		if err := svc.AddTarget(service, p.t, p.pw, p.persist); err != nil {
 			return err
 		}
 	}
-	if err := svc.EnsureMigrationsDir(); err != nil {
+	if err := svc.EnsureMigrationsDir(service); err != nil {
 		return err
 	}
-	fmt.Printf("Initialized godwit project\n  migrations: %s\n  targets:    %d\n", svc.MigrationsLocation(), len(svc.Targets()))
+	what := "project"
+	if service != "" {
+		what = "service " + service
+	}
+	fmt.Printf("Initialized godwit %s\n  migrations: %s\n  targets:    %d\n", what, svc.MigrationsLocation(service), len(svc.ScopeTargets(service)))
 	return nil
 }
 

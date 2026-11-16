@@ -13,7 +13,8 @@ needs:
    files while you switch over.
 2. **History.** For each target it reads goose's version table
    (`goose_db_version`) and records the versions goose has applied in godwit's
-   `godwit_migration` table. The goose table is only read, never changed.
+   `godwit_migration` table (`godwit_migration_<service>` for a service of a
+   [workspace](./monorepos.md)). The goose table is only read, never changed.
 
 ```
 godwit translate goose [--dry-run] [--table NAME] [target...]

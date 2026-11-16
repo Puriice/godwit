@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/puriice/godwit/internal/domain"
 )
 
 // These tests run the real godwit and the example jsonfile plugin, so a detached
@@ -142,7 +144,7 @@ func TestPluginRunCancelDropsTheQueue(t *testing.T) {
 	p.waitLog("… up 1_m1") // the plugin is in the middle of a migration
 
 	r := &Runner{root: p.dir}
-	if err := r.Stop("local"); err != nil {
+	if err := r.Stop(domain.TargetRef{Target: "local"}); err != nil {
 		t.Fatal(err)
 	}
 	log := p.waitLog("-- finished cancelled")

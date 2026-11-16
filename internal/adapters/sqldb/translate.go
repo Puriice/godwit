@@ -109,7 +109,7 @@ func (c *conn) ImportRecords(ctx context.Context, recs []domain.Record) (int, er
 	for _, r := range recs {
 		var n int
 		err := tx.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE version = %s", Table, p(1)), r.Version).Scan(&n)
+			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE version = %s", c.table, p(1)), r.Version).Scan(&n)
 		if err != nil {
 			return 0, err
 		}
@@ -122,7 +122,7 @@ func (c *conn) ImportRecords(ctx context.Context, recs []domain.Record) (int, er
 		}
 		_, err = tx.ExecContext(ctx,
 			fmt.Sprintf("INSERT INTO %s (version, name, checksum, applied_at, duration_ms, dirty, batch) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-				Table, p(1), p(2), p(3), p(4), p(5), p(6), p(7)),
+				c.table, p(1), p(2), p(3), p(4), p(5), p(6), p(7)),
 			r.Version, r.Name, r.Checksum, at, r.DurationMS, false, r.Batch)
 		if err != nil {
 			return 0, err

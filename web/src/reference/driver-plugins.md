@@ -153,9 +153,9 @@ stop the process; you may keep serving requests.
 
 | Method | Params | Result |
 |---|---|---|
-| `handshake` | `{"protocol": 1}` | `{"protocol": 1, "driver": "sqlite", "aliases": ["sqlite3"], "schemes": ["sqlite"], "noHost": true}` |
+| `handshake` | `{"protocol": 2}` | `{"protocol": 2, "driver": "sqlite", "aliases": ["sqlite3"], "schemes": ["sqlite"], "noHost": true}` |
 | `parse_connection` | `{"connstring": "..."}` | `{"target": {...}, "password": "..."}` |
-| `open` | `{"target": {...}, "password": "..."}` | none |
+| `open` | `{"target": {...}, "password": "...", "table": "godwit_migration"}` | none |
 | `ensure_table` | none | none |
 | `lock` / `unlock` | none | none |
 | `applied` | none | `{"records": [...]}` |
@@ -164,8 +164,10 @@ stop the process; you may keep serving requests.
 | `translate_read` / `translate_import` | see below | optional, see below |
 | `close` | none | none |
 
-**`handshake`** runs when godwit starts and for `plugin add`. `protocol` must be
-`1`, otherwise the plugin is rejected. `driver` is the name used in targets and
+**`handshake`** runs when godwit starts and for `plugin add`. Reply with
+`protocol` `2`. godwit still loads a plugin that replies `1`, but cannot use it
+for a service of a [workspace](../guides/monorepos.md), which needs its own
+state table; any other version is rejected. `driver` is the name used in targets and
 in `-- +godwit driver:` directives. `aliases` are extra names that mean the same
 driver. `noHost: true` says the database has no network endpoint (a file, for
 example): godwit then does not require a host or user, and never asks for a
@@ -184,9 +186,12 @@ Any field may be omitted. Return the password separately so godwit stores it in
 `.godwit/.env` and not in `config.json`.
 
 **`open`** connects to the target. Return an `error` if it cannot. The target
-also carries its `name`.
+also carries its `name`. `table` names the state table this connection owns:
+`godwit_migration` for a plain project, `godwit_migration_<service>` for a
+service of a workspace, so services sharing one database keep separate
+histories. Use it in every method below, including the lock.
 
-**`ensure_table`** creates godwit's state table, `godwit_migration`, if it is
+**`ensure_table`** creates the state table named in `open` if it is
 missing. Use these columns (types adapted to your database):
 
 | column | meaning |
@@ -199,8 +204,9 @@ missing. Use these columns (types adapted to your database):
 | `dirty` | boolean |
 | `batch` | integer, default 0 (optional) |
 
-**`lock` / `unlock`** take and release a database-wide lock so two godwit runs
-cannot migrate the same database at once. `lock` should fail rather than wait
+**`lock` / `unlock`** take and release a lock on the state table so two godwit
+runs cannot migrate it at once. Derive the lock from the table name, so that
+services sharing a database do not block each other. `lock` should fail rather than wait
 forever. If your database has no locking, serialize however you can, or make
 `lock` a no-op.
 
@@ -237,7 +243,7 @@ files:
 **`translate_read` / `translate_import`** are optional. They let
 `godwit translate goose` move a project over from another migration tool. A
 plugin opts in by adding `"translate": ["goose"]` to its handshake reply (the
-protocol version stays `1`); godwit never sends these methods otherwise.
+protocol version does not change); godwit never sends these methods otherwise.
 
 - `translate_read` takes `{"tool": "goose", "table": "goose_db_version"}` and
   returns `{"found": true, "rows": [{"version": 1, "applied": true, "at": "..."}]}`.
@@ -254,7 +260,7 @@ In the Go package, list the tools in `Info.Translate` and implement
 ## Testing a plugin by hand
 
 ```
-printf '{"id":1,"method":"handshake","params":{"protocol":1}}\n' | ./godwit-driver-sqlite
+printf '{"id":1,"method":"handshake","params":{"protocol":2}}\n' | ./godwit-driver-sqlite
 ```
 
 You should get one response line. Then `godwit plugin add` and a normal

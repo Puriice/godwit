@@ -64,19 +64,27 @@ func (f *fakeDB) Revert(_ context.Context, m *domain.Migration) error {
 type fakeFactory struct {
 	db      *fakeDB
 	openErr error
+	// What the last Open was given.
+	lastTarget         domain.Target
+	lastPassword, last string // last is the state table
 }
 
 func (f *fakeFactory) Drivers() []string { return []string{"mysql", "postgres"} }
-func (f *fakeFactory) Open(context.Context, domain.Target, string) (Database, error) {
+func (f *fakeFactory) Open(_ context.Context, t domain.Target, pw, table string) (Database, error) {
+	f.lastTarget, f.lastPassword, f.last = t, pw, table
 	return f.db, f.openErr
 }
 
 type fakeSource struct {
 	migs    []*domain.Migration
 	created []string
+	loaded  []string // the directories Load was asked for
 }
 
-func (f *fakeSource) Load(string) ([]*domain.Migration, error) { return f.migs, nil }
+func (f *fakeSource) Load(dir string) ([]*domain.Migration, error) {
+	f.loaded = append(f.loaded, dir)
+	return f.migs, nil
+}
 func (f *fakeSource) Scan(string) ([]domain.MigrationFile, error) {
 	var out []domain.MigrationFile
 	for _, m := range f.migs {
@@ -121,11 +129,15 @@ func (f *fakeStore) SetPassword(t, pw string, persist bool) error {
 	}
 	return nil
 }
+func (f *fakeStore) PasswordKey(t string) string { return "GODWIT_" + strings.ToUpper(t) + "_PASSWORD" }
 func (f *fakeStore) DeletePassword(t string) error {
 	delete(f.pw, t)
 	delete(f.session, t)
 	return nil
 }
+
+// ref names a target of a plain project.
+func ref(target string) domain.TargetRef { return domain.TargetRef{Target: target} }
 
 func mig(v int64, name string) *domain.Migration {
 	return &domain.Migration{Version: v, Name: name, Checksum: name}
@@ -168,7 +180,7 @@ func TestStatusStates(t *testing.T) {
 	h.db.recs[2] = &domain.Record{Version: 2, Name: "b", Checksum: "old"}
 	h.db.recs[4] = &domain.Record{Version: 4, Name: "gone", Checksum: "x"}
 
-	items, err := h.svc.Status(context.Background(), "t")
+	items, err := h.svc.Status(context.Background(), ref("t"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +200,7 @@ func TestUpLimitAndEvents(t *testing.T) {
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
 	var evs []domain.Event
 
-	n, err := h.svc.Up(context.Background(), "t", 2, record(&evs))
+	n, err := h.svc.Up(context.Background(), ref("t"), 2, record(&evs))
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -201,7 +213,7 @@ func TestUpLimitAndEvents(t *testing.T) {
 	if h.db.closed != 1 {
 		t.Errorf("connection closed %d times, want 1", h.db.closed)
 	}
-	n, _ = h.svc.Up(context.Background(), "t", 0, nil)
+	n, _ = h.svc.Up(context.Background(), ref("t"), 0, nil)
 	if n != 1 || len(h.db.recs) != 3 {
 		t.Errorf("second run applied %d", n)
 	}
@@ -212,7 +224,7 @@ func TestUpFailureLeavesDirtyAndBlocks(t *testing.T) {
 	h.db.failOn = 2
 	var last domain.Event
 
-	n, err := h.svc.Up(context.Background(), "t", 0, func(e domain.Event) { last = e })
+	n, err := h.svc.Up(context.Background(), ref("t"), 0, func(e domain.Event) { last = e })
 	if err == nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -224,22 +236,22 @@ func TestUpFailureLeavesDirtyAndBlocks(t *testing.T) {
 	}
 
 	h.db.failOn = 0
-	if _, err := h.svc.Up(context.Background(), "t", 0, nil); err == nil {
+	if _, err := h.svc.Up(context.Background(), ref("t"), 0, nil); err == nil {
 		t.Error("expected dirty target to block further runs")
 	}
-	if err := h.svc.ClearDirty(context.Background(), "t", 2); err != nil {
+	if err := h.svc.ClearDirty(context.Background(), ref("t"), 2); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := h.svc.Up(context.Background(), "t", 0, nil); err != nil || n != 1 {
+	if n, err := h.svc.Up(context.Background(), ref("t"), 0, nil); err != nil || n != 1 {
 		t.Errorf("after clear: n=%d err=%v", n, err)
 	}
 }
 
 func TestDown(t *testing.T) {
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
-	h.svc.Up(context.Background(), "t", 0, nil)
+	h.svc.Up(context.Background(), ref("t"), 0, nil)
 
-	n, err := h.svc.Down(context.Background(), "t", 2, nil)
+	n, err := h.svc.Down(context.Background(), ref("t"), 2, nil)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -249,7 +261,7 @@ func TestDown(t *testing.T) {
 
 	// Default n is 1; a recorded migration without a file cannot be reverted.
 	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g", AppliedAt: time.Now().Add(time.Hour)}
-	if _, err := h.svc.Down(context.Background(), "t", 0, nil); err == nil {
+	if _, err := h.svc.Down(context.Background(), ref("t"), 0, nil); err == nil {
 		t.Error("expected error reverting migration with no file")
 	}
 }
@@ -257,14 +269,14 @@ func TestDown(t *testing.T) {
 func TestDownRevertsLatestApplied(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
-	h.svc.Up(ctx, "t", 0, nil)
+	h.svc.Up(ctx, ref("t"), 0, nil)
 	// Migration 2 was applied last, even though 3 has the higher version.
 	base := time.Now()
 	h.db.recs[1].AppliedAt = base.Add(-3 * time.Hour)
 	h.db.recs[3].AppliedAt = base.Add(-2 * time.Hour)
 	h.db.recs[2].AppliedAt = base.Add(-1 * time.Hour)
 
-	if n, err := h.svc.Down(ctx, "t", 1, nil); err != nil || n != 1 {
+	if n, err := h.svc.Down(ctx, ref("t"), 1, nil); err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 	if len(h.db.reverted) != 1 || h.db.reverted[0] != 2 {
@@ -275,18 +287,18 @@ func TestDownRevertsLatestApplied(t *testing.T) {
 func TestDownBatch(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"), mig(4, "d"), mig(5, "e"))
-	h.svc.Up(ctx, "t", 1, nil) // batch 1: 1
-	h.svc.Up(ctx, "t", 3, nil) // batch 2: 2, 3, 4
-	h.svc.Up(ctx, "t", 0, nil) // batch 3: 5
+	h.svc.Up(ctx, ref("t"), 1, nil) // batch 1: 1
+	h.svc.Up(ctx, ref("t"), 3, nil) // batch 2: 2, 3, 4
+	h.svc.Up(ctx, ref("t"), 0, nil) // batch 3: 5
 	if h.db.recs[1].Batch != 1 || h.db.recs[3].Batch != 2 || h.db.recs[5].Batch != 3 {
 		t.Fatalf("batches = %d %d %d", h.db.recs[1].Batch, h.db.recs[3].Batch, h.db.recs[5].Batch)
 	}
 
 	// The latest batch holds only 5; then the next one rolls back 4, 3, 2 in reverse.
-	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 1 {
+	if n, err := h.svc.DownBatch(ctx, ref("t"), nil); err != nil || n != 1 {
 		t.Fatalf("first: n=%d err=%v", n, err)
 	}
-	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 3 {
+	if n, err := h.svc.DownBatch(ctx, ref("t"), nil); err != nil || n != 3 {
 		t.Fatalf("second: n=%d err=%v", n, err)
 	}
 	want := []int64{5, 4, 3, 2}
@@ -304,9 +316,9 @@ func TestDownBatch(t *testing.T) {
 
 	// A row without a batch (written before batches existed) stands alone.
 	h.db.recs[1].Batch = 0
-	h.svc.Up(ctx, "t", 1, nil)
+	h.svc.Up(ctx, ref("t"), 1, nil)
 	h.db.recs[2].Batch = 0
-	if n, err := h.svc.DownBatch(ctx, "t", nil); err != nil || n != 1 {
+	if n, err := h.svc.DownBatch(ctx, ref("t"), nil); err != nil || n != 1 {
 		t.Errorf("legacy: n=%d err=%v", n, err)
 	}
 }
@@ -317,7 +329,7 @@ func TestUpTo(t *testing.T) {
 	var evs []domain.Event
 
 	// Applies 1..3 inclusive, in order, and leaves 4 pending.
-	n, err := h.svc.UpTo(ctx, "t", 3, record(&evs))
+	n, err := h.svc.UpTo(ctx, ref("t"), 3, record(&evs))
 	if err != nil || n != 3 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -333,21 +345,21 @@ func TestUpTo(t *testing.T) {
 
 	// Only what is still pending up to the target is applied.
 	h2 := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
-	h2.svc.Up(ctx, "t", 1, nil)
-	if n, err := h2.svc.UpTo(ctx, "t", 2, nil); err != nil || n != 1 {
+	h2.svc.Up(ctx, ref("t"), 1, nil)
+	if n, err := h2.svc.UpTo(ctx, ref("t"), 2, nil); err != nil || n != 1 {
 		t.Errorf("second run: n=%d err=%v", n, err)
 	}
 
 	// Errors: already applied, unknown version, and a failing migration stops the run.
-	if _, err := h.svc.UpTo(ctx, "t", 2, nil); err == nil || !strings.Contains(err.Error(), "already") {
+	if _, err := h.svc.UpTo(ctx, ref("t"), 2, nil); err == nil || !strings.Contains(err.Error(), "already") {
 		t.Errorf("already applied: err = %v", err)
 	}
-	if _, err := h.svc.UpTo(ctx, "t", 99, nil); err == nil {
+	if _, err := h.svc.UpTo(ctx, ref("t"), 99, nil); err == nil {
 		t.Error("unknown version: expected error")
 	}
 	h3 := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
 	h3.db.failOn = 2
-	if n, err := h3.svc.UpTo(ctx, "t", 3, nil); err == nil || n != 1 {
+	if n, err := h3.svc.UpTo(ctx, ref("t"), 3, nil); err == nil || n != 1 {
 		t.Errorf("failure: n=%d err=%v", n, err)
 	}
 	if h3.db.recs[3] != nil {
@@ -358,11 +370,11 @@ func TestUpTo(t *testing.T) {
 func TestDownTo(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"), mig(4, "d"))
-	h.svc.Up(ctx, "t", 0, nil)
+	h.svc.Up(ctx, ref("t"), 0, nil)
 	var evs []domain.Event
 
 	// Reverts 4 then 3, newest first; 2 becomes the latest and stays applied.
-	n, err := h.svc.DownTo(ctx, "t", 2, record(&evs))
+	n, err := h.svc.DownTo(ctx, ref("t"), 2, record(&evs))
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -377,23 +389,23 @@ func TestDownTo(t *testing.T) {
 	}
 
 	// Already the latest: nothing to do, not an error.
-	if n, err := h.svc.DownTo(ctx, "t", 2, nil); err != nil || n != 0 {
+	if n, err := h.svc.DownTo(ctx, ref("t"), 2, nil); err != nil || n != 0 {
 		t.Errorf("already latest: n=%d err=%v", n, err)
 	}
 	// Errors: pending target, unknown version.
-	if _, err := h.svc.DownTo(ctx, "t", 3, nil); err == nil || !strings.Contains(err.Error(), "not applied") {
+	if _, err := h.svc.DownTo(ctx, ref("t"), 3, nil); err == nil || !strings.Contains(err.Error(), "not applied") {
 		t.Errorf("pending: err = %v", err)
 	}
-	if _, err := h.svc.DownTo(ctx, "t", 99, nil); err == nil {
+	if _, err := h.svc.DownTo(ctx, ref("t"), 99, nil); err == nil {
 		t.Error("unknown version: expected error")
 	}
 
 	// A missing file anywhere in the range aborts before anything is reverted.
 	h2 := newHarness(t, mig(1, "a"), mig(2, "b"))
-	h2.svc.Up(ctx, "t", 0, nil)
+	h2.svc.Up(ctx, ref("t"), 0, nil)
 	h2.db.recs[3] = &domain.Record{Version: 3, Name: "ghost", Checksum: "g"} // newest, no file
 	h2.db.recs[4] = &domain.Record{Version: 4, Name: "ghost2", Checksum: "g"}
-	if _, err := h2.svc.DownTo(ctx, "t", 1, nil); err == nil {
+	if _, err := h2.svc.DownTo(ctx, ref("t"), 1, nil); err == nil {
 		t.Error("expected error for missing file")
 	}
 	if len(h2.db.reverted) != 0 {
@@ -404,13 +416,13 @@ func TestDownTo(t *testing.T) {
 func TestRedo(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"), mig(3, "c"))
-	h.svc.Up(ctx, "t", 0, nil)
+	h.svc.Up(ctx, ref("t"), 0, nil)
 	// Migration 2's file was edited after it was applied.
 	h.db.recs[2].Checksum = "old"
 	h.db.recs[2].AppliedAt = time.Time{}
 
 	var evs []domain.Event
-	if err := h.svc.Redo(ctx, "t", 2, record(&evs)); err != nil {
+	if err := h.svc.Redo(ctx, ref("t"), 2, record(&evs)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -436,7 +448,7 @@ func TestRedo(t *testing.T) {
 	if len(h.db.recs) != 3 || h.db.locked || h.db.closed != 2 {
 		t.Errorf("recs=%d locked=%v closed=%d", len(h.db.recs), h.db.locked, h.db.closed)
 	}
-	if items, _ := h.svc.Status(ctx, "t"); items[1].State != domain.Applied {
+	if items, _ := h.svc.Status(ctx, ref("t")); items[1].State != domain.Applied {
 		t.Errorf("state after redo = %s, want applied", items[1].State)
 	}
 }
@@ -444,13 +456,13 @@ func TestRedo(t *testing.T) {
 func TestRedoRefusals(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"), mig(2, "b"))
-	h.svc.Up(ctx, "t", 1, nil) // 1 applied, 2 pending
+	h.svc.Up(ctx, ref("t"), 1, nil) // 1 applied, 2 pending
 	h.db.recs[9] = &domain.Record{Version: 9, Name: "ghost", Checksum: "g", AppliedAt: time.Now().Add(time.Hour)}
 
 	cases := map[string]int64{"pending": 2, "no such version": 42, "file missing": 9}
 	for name, v := range cases {
 		reverted := len(h.db.reverted)
-		if err := h.svc.Redo(ctx, "t", v, nil); err == nil {
+		if err := h.svc.Redo(ctx, ref("t"), v, nil); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
 		if len(h.db.reverted) != reverted || h.db.locked {
@@ -460,16 +472,16 @@ func TestRedoRefusals(t *testing.T) {
 
 	// A dirty migration blocks redo until it is repaired.
 	h.db.recs[1].Dirty = true
-	if err := h.svc.Redo(ctx, "t", 1, nil); err == nil || !strings.Contains(err.Error(), "dirty") {
+	if err := h.svc.Redo(ctx, ref("t"), 1, nil); err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Errorf("dirty: err = %v", err)
 	}
 	h.db.recs[1].Dirty = false
 
-	if err := h.svc.Redo(ctx, "nope", 1, nil); err == nil {
+	if err := h.svc.Redo(ctx, ref("nope"), 1, nil); err == nil {
 		t.Error("unknown target: expected error")
 	}
-	h.svc.SetTargetEnabled("t", false)
-	if err := h.svc.Redo(ctx, "t", 1, nil); !errors.Is(err, ErrTargetDisabled) {
+	h.svc.SetTargetEnabled(ref("t"), false)
+	if err := h.svc.Redo(ctx, ref("t"), 1, nil); !errors.Is(err, ErrTargetDisabled) {
 		t.Errorf("disabled: err = %v", err)
 	}
 }
@@ -477,11 +489,11 @@ func TestRedoRefusals(t *testing.T) {
 func TestRedoReapplyFailureIsReported(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, mig(1, "a"))
-	h.svc.Up(ctx, "t", 0, nil)
+	h.svc.Up(ctx, ref("t"), 0, nil)
 	h.db.failOn = 1 // the re-apply will fail
 
 	var last domain.Event
-	err := h.svc.Redo(ctx, "t", 1, func(e domain.Event) { last = e })
+	err := h.svc.Redo(ctx, ref("t"), 1, func(e domain.Event) { last = e })
 	if err == nil || !strings.Contains(err.Error(), "now reverted") {
 		t.Fatalf("err = %v; it should say the migration was left reverted", err)
 	}
@@ -496,18 +508,18 @@ func TestRedoReapplyFailureIsReported(t *testing.T) {
 func TestRunErrors(t *testing.T) {
 	h := newHarness(t, mig(1, "a"))
 	h.db.lockErr = errors.New("held")
-	if _, err := h.svc.Up(context.Background(), "t", 0, nil); err == nil {
+	if _, err := h.svc.Up(context.Background(), ref("t"), 0, nil); err == nil {
 		t.Error("expected lock error")
 	}
 	if h.db.closed != 1 {
 		t.Errorf("connection leaked after lock error: closed=%d", h.db.closed)
 	}
-	if _, err := h.svc.Up(context.Background(), "nope", 0, nil); err == nil {
+	if _, err := h.svc.Up(context.Background(), ref("nope"), 0, nil); err == nil {
 		t.Error("expected unknown target error")
 	}
 
 	delete(h.store.pw, "t")
-	if _, err := h.svc.Status(context.Background(), "t"); err == nil {
+	if _, err := h.svc.Status(context.Background(), ref("t")); err == nil {
 		t.Error("expected missing password error")
 	}
 }
@@ -518,39 +530,39 @@ func TestTargetLifecycle(t *testing.T) {
 	h := newHarness(t)
 	svc := h.svc
 
-	if err := svc.AddTarget(domain.Target{Name: " prod ", Driver: "mysql"}, "pw", true); err != nil {
+	if err := svc.AddTarget("", domain.Target{Name: " prod ", Driver: "mysql"}, "pw", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := svc.Target("prod"); !ok || h.store.pw["prod"] != "pw" {
-		t.Errorf("add: targets=%v pw=%v", svc.Targets(), h.store.pw)
+	if _, ok := svc.Target(ref("prod")); !ok || h.store.pw["prod"] != "pw" {
+		t.Errorf("add: targets=%v pw=%v", svc.ScopeTargets(""), h.store.pw)
 	}
-	if err := svc.AddTarget(domain.Target{Name: "prod", Driver: "mysql"}, "", true); err == nil {
+	if err := svc.AddTarget("", domain.Target{Name: "prod", Driver: "mysql"}, "", true); err == nil {
 		t.Error("expected duplicate name error")
 	}
-	if err := svc.AddTarget(domain.Target{Name: "x", Driver: "oracle"}, "", true); err == nil {
+	if err := svc.AddTarget("", domain.Target{Name: "x", Driver: "oracle"}, "", true); err == nil {
 		t.Error("expected unknown driver error")
 	}
-	if err := svc.AddTarget(domain.Target{Name: " ", Driver: "mysql"}, "", true); err == nil {
+	if err := svc.AddTarget("", domain.Target{Name: " ", Driver: "mysql"}, "", true); err == nil {
 		t.Error("expected empty name error")
 	}
 
 	// Update keeps the password when none is given.
-	if err := svc.UpdateTarget(domain.Target{Name: "prod", Driver: "mysql", Host: "db"}, "", true); err != nil {
+	if err := svc.UpdateTarget(ref("prod"), domain.Target{Name: "prod", Driver: "mysql", Host: "db"}, "", true); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := svc.Target("prod"); got.Host != "db" || h.store.pw["prod"] != "pw" {
+	if got, _ := svc.Target(ref("prod")); got.Host != "db" || h.store.pw["prod"] != "pw" {
 		t.Errorf("update: %+v pw=%q", got, h.store.pw["prod"])
 	}
-	if err := svc.UpdateTarget(domain.Target{Name: "ghost", Driver: "mysql"}, "", true); err == nil {
+	if err := svc.UpdateTarget(ref("ghost"), domain.Target{Name: "ghost", Driver: "mysql"}, "", true); err == nil {
 		t.Error("expected unknown target error")
 	}
 
 	// Remove deletes the target and its password, and saves.
 	saves := h.store.saves
-	if err := svc.RemoveTarget("prod"); err != nil {
+	if err := svc.RemoveTarget(ref("prod")); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := svc.Target("prod"); ok {
+	if _, ok := svc.Target(ref("prod")); ok {
 		t.Error("target still present")
 	}
 	if _, ok := h.store.pw["prod"]; ok {
@@ -559,26 +571,26 @@ func TestTargetLifecycle(t *testing.T) {
 	if h.store.saves == saves {
 		t.Error("project not saved after removal")
 	}
-	if err := svc.RemoveTarget("prod"); err == nil {
+	if err := svc.RemoveTarget(ref("prod")); err == nil {
 		t.Error("expected error removing unknown target")
 	}
 }
 
 func TestPasswords(t *testing.T) {
 	h := newHarness(t)
-	h.svc.AddTarget(domain.Target{Name: "nopw", Driver: "mysql"}, "", true)
+	h.svc.AddTarget("", domain.Target{Name: "nopw", Driver: "mysql"}, "", true)
 
 	missing := h.svc.TargetsMissingPassword()
-	if len(missing) != 1 || missing[0].Name != "nopw" {
+	if len(missing) != 1 || missing[0] != ref("nopw") {
 		t.Fatalf("missing = %+v", missing)
 	}
-	if err := h.svc.SetPassword("nopw", "s", false); err != nil {
+	if err := h.svc.SetPassword(ref("nopw"), "s", false); err != nil {
 		t.Fatal(err)
 	}
-	if !h.svc.HasPassword("nopw") || len(h.store.pw) != 1 { // session-only: not persisted
-		t.Errorf("session password: has=%v persisted=%v", h.svc.HasPassword("nopw"), h.store.pw)
+	if !h.svc.HasPassword(ref("nopw")) || len(h.store.pw) != 1 { // session-only: not persisted
+		t.Errorf("session password: has=%v persisted=%v", h.svc.HasPassword(ref("nopw")), h.store.pw)
 	}
-	if err := h.svc.SetPassword("ghost", "s", true); err == nil {
+	if err := h.svc.SetPassword(ref("ghost"), "s", true); err == nil {
 		t.Error("expected unknown target error")
 	}
 }
@@ -587,19 +599,19 @@ func TestDisabledTarget(t *testing.T) {
 	h := newHarness(t, mig(1, "a"))
 	ctx := context.Background()
 
-	if err := h.svc.SetTargetEnabled("t", false); err != nil {
+	if err := h.svc.SetTargetEnabled(ref("t"), false); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.svc.Target("t"); !got.Disabled || !h.store.project.Targets[0].Disabled {
+	if got, _ := h.svc.Target(ref("t")); !got.Disabled || !h.store.project.Targets[0].Disabled {
 		t.Errorf("not disabled / not saved: %+v", got)
 	}
 
 	// Every operation that would connect refuses, and never opens a connection.
 	ops := map[string]func() error{
-		"status": func() error { _, err := h.svc.Status(ctx, "t"); return err },
-		"up":     func() error { _, err := h.svc.Up(ctx, "t", 0, nil); return err },
-		"down":   func() error { _, err := h.svc.Down(ctx, "t", 0, nil); return err },
-		"clear":  func() error { return h.svc.ClearDirty(ctx, "t", 1) },
+		"status": func() error { _, err := h.svc.Status(ctx, ref("t")); return err },
+		"up":     func() error { _, err := h.svc.Up(ctx, ref("t"), 0, nil); return err },
+		"down":   func() error { _, err := h.svc.Down(ctx, ref("t"), 0, nil); return err },
+		"clear":  func() error { return h.svc.ClearDirty(ctx, ref("t"), 1) },
 	}
 	for name, op := range ops {
 		if err := op(); !errors.Is(err, ErrTargetDisabled) {
@@ -618,37 +630,37 @@ func TestDisabledTarget(t *testing.T) {
 
 	// Disabling twice is a no-op; enabling restores normal operation.
 	saves := h.store.saves
-	if err := h.svc.SetTargetEnabled("t", false); err != nil || h.store.saves != saves {
+	if err := h.svc.SetTargetEnabled(ref("t"), false); err != nil || h.store.saves != saves {
 		t.Errorf("repeat disable: err=%v saves %d->%d", err, saves, h.store.saves)
 	}
 	h.store.pw["t"] = "secret"
-	if err := h.svc.SetTargetEnabled("t", true); err != nil {
+	if err := h.svc.SetTargetEnabled(ref("t"), true); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := h.svc.Up(ctx, "t", 0, nil); err != nil || n != 1 {
+	if n, err := h.svc.Up(ctx, ref("t"), 0, nil); err != nil || n != 1 {
 		t.Errorf("after enable: n=%d err=%v", n, err)
 	}
-	if err := h.svc.SetTargetEnabled("ghost", true); err == nil {
+	if err := h.svc.SetTargetEnabled(ref("ghost"), true); err == nil {
 		t.Error("expected error for unknown target")
 	}
 }
 
 func TestMigrationsDir(t *testing.T) {
 	h := newHarness(t)
-	if h.svc.MigrationsDir() != "migrations" {
-		t.Errorf("default dir = %q", h.svc.MigrationsDir())
+	if h.svc.MigrationsDir("") != "migrations" {
+		t.Errorf("default dir = %q", h.svc.MigrationsDir(""))
 	}
-	if err := h.svc.SetMigrationsDir("  db/migs "); err != nil {
+	if err := h.svc.SetMigrationsDir("", "  db/migs "); err != nil {
 		t.Fatal(err)
 	}
 	if want := filepath.Clean("db/migs"); h.store.project.MigrationsDir != want {
 		t.Errorf("saved dir = %q, want %q", h.store.project.MigrationsDir, want)
 	}
-	if err := h.svc.SetMigrationsDir(" "); err == nil {
+	if err := h.svc.SetMigrationsDir("", " "); err == nil {
 		t.Error("expected error for empty dir")
 	}
-	loc, err := h.svc.CreateMigration(" add_users ")
-	if err != nil || h.src.created[0] != h.svc.MigrationsDir()+"/add_users" {
+	loc, err := h.svc.CreateMigration("", " add_users ")
+	if err != nil || h.src.created[0] != h.svc.MigrationsDir("")+"/add_users" {
 		t.Errorf("create: %q %v %v", loc, err, h.src.created)
 	}
 }

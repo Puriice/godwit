@@ -17,6 +17,11 @@ Targets:
   auth disable <name>                      temporarily skip a target
   auth enable <name>                       use a disabled target again
 
+Services (monorepos):
+  service list                             list the services of this workspace
+  service add <dir> [name]                 make <dir> a service and add it to the workspace
+  service remove <name>                    take a service out of the workspace (files are kept)
+
 Plugins:
   plugin install <url> [name]              build a driver plugin from a Go package and add it
   plugin add <command> [name]              add a driver plugin you already have
@@ -32,7 +37,7 @@ Migrations:
   migrate clear-dirty <version> <target>   clear a dirty flag after a manual repair
   migrate new <name>                       create a migration file
   process list [target...]                 background runs and their queues
-  process show <target> [-n LINES]         a run's details, queue and log tail
+  process show [-n LINES] <target>         a run's details, queue and log tail
   process cancel <target>                  cancel the run in progress
   process dequeue <target> <position>      remove one queued job
   process clear-queue <target>             remove every queued job of a target
@@ -44,6 +49,14 @@ Translate:
 
 Without target names, `migrate` uses every enabled target. It tries all of them
 and exits non-zero if any failed.
+
+In a [workspace](../guides/monorepos.md), `auth`, `migrate`, `process` and
+`translate` take `-s NAME` (or `--service NAME`) to limit them to one service;
+it can be repeated. Without it they act on every service at the workspace root,
+and on the current service inside a service directory. A target can also be
+named `service/target`, as in `users/dev`. Flags go before positional
+arguments. `migrate new` at a workspace root with several services needs `-s`.
+At the root, `auth add` without `-s` adds a global target.
 
 Connection strings:
 

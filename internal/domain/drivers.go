@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,41 @@ func MergePlugins(global, project []PluginSpec) []PluginSpec {
 		}
 	}
 	return append(out, project...)
+}
+
+// ServicePlugins is the plugin list of one service of a workspace.
+type ServicePlugins struct {
+	Service string
+	Plugins []PluginSpec
+}
+
+// MergeWorkspacePlugins adds the plugins of a workspace's services to base
+// (the global and root plugins, already merged). One process serves every
+// service, so a driver plugin is loaded once: a service entry replaces a base
+// entry with the same name, as a project's does, and when two services define
+// the same name differently the first wins and a warning says so.
+func MergeWorkspacePlugins(base []PluginSpec, services []ServicePlugins) (merged []PluginSpec, warnings []string) {
+	merged = slices.Clone(base)
+	owner := map[string]string{} // lower-case name -> service that defined it
+	for _, sp := range services {
+		for _, p := range sp.Plugins {
+			key := strings.ToLower(p.Name)
+			if first, ok := owner[key]; ok {
+				i := slices.IndexFunc(merged, func(x PluginSpec) bool { return strings.EqualFold(x.Name, p.Name) })
+				if i >= 0 && !samePlugin(merged[i], p) {
+					warnings = append(warnings, fmt.Sprintf("plugin %q: defined by services %s and %s with different commands; using the one from %s", p.Name, first, sp.Service, first))
+				}
+				continue
+			}
+			owner[key] = sp.Service
+			merged = MergePlugins(merged, []PluginSpec{p})
+		}
+	}
+	return merged, warnings
+}
+
+func samePlugin(a, b PluginSpec) bool {
+	return a.Command == b.Command && slices.Equal(a.Args, b.Args)
 }
 
 // DriverInfo describes how a driver's connection strings are written. The

@@ -12,86 +12,153 @@ import (
 
 const filesHelp = "←/→ switch panel · ↑/↓ select · ↵ migrate all to selected · e enable/disable by default · n new migration · r refresh · q quit"
 
+// fileRow is one line group of the migrations panel: a migration file of a
+// service. In a workspace a service without files (or whose directory cannot
+// be read) gets a row of its own with no file, so it still shows and can be
+// selected.
+type fileRow struct {
+	service string
+	file    *domain.MigrationFile // nil for an empty or unreadable service
+	err     error                 // the service's files could not be listed
+}
+
+// fileRows lists the migration files of every service shown, service by
+// service.
+func (m *Model) fileRows() []fileRow {
+	var rows []fileRow
+	ws := m.svc.IsWorkspace()
+	for _, service := range m.svc.DefaultServices() {
+		files, err := m.svc.MigrationFiles(service)
+		if err != nil || (ws && len(files) == 0) {
+			rows = append(rows, fileRow{service: service, err: err})
+			continue
+		}
+		for i := range files {
+			rows = append(rows, fileRow{service: service, file: &files[i]})
+		}
+	}
+	return rows
+}
+
+// heading reports whether row i starts a service's section (workspace only).
+func (m *Model) heading(rows []fileRow, i int) bool {
+	return m.svc.IsWorkspace() && (i == 0 || rows[i-1].service != rows[i].service)
+}
+
 // viewFiles lists the migration files on disk, independent of any target.
 func (m *Model) viewFiles() string {
 	var b strings.Builder
 	b.WriteString(m.header(m.tabs()))
-	files, err := m.svc.MigrationFiles()
-	switch {
-	case err != nil:
-		b.WriteString(errStyle.Render(firstLine(err.Error())))
-		b.WriteRune('\n')
-	case len(files) == 0:
-		b.WriteString(dimStyle.Render("No migration files. Press n to create one."))
+	rows := m.fileRows()
+	ws := m.svc.IsWorkspace()
+	if !ws {
+		switch {
+		case len(rows) == 1 && rows[0].err != nil:
+			b.WriteString(errStyle.Render(firstLine(rows[0].err.Error())))
+			b.WriteRune('\n')
+			rows = nil
+		case len(rows) == 0:
+			b.WriteString(dimStyle.Render("No migration files. Press n to create one."))
+			b.WriteRune('\n')
+		}
+	} else if len(rows) == 0 {
+		b.WriteString(dimStyle.Render("This workspace has no services yet. Add one with: godwit service add <dir>"))
 		b.WriteRune('\n')
 	}
+	m.fcur = min(m.fcur, max(len(rows)-1, 0))
 
+	lines := func(i int) int {
+		if i < 0 || i >= len(rows) {
+			return 0
+		}
+		n := rowLines(rows[i])
+		if m.heading(rows, i) {
+			n++
+		}
+		return n
+	}
 	room := max(m.height-9-lipgloss.Height(m.footer(filesHelp)), 3)
 	// A file with an error takes a line per error line, so budget by lines:
 	// scroll just far enough that the cursor row is the last one that fits.
-	start := min(m.fcur, max(len(files)-1, 0))
-	for lines := fileLines(files, start); start > 0 && lines+fileLines(files, start-1) <= room; {
+	start := m.fcur
+	for used := lines(start); start > 0 && used+lines(start-1) <= room; {
 		start--
-		lines += fileLines(files, start)
+		used += lines(start)
 	}
 	used, end := 0, start
-	for i := start; i < len(files); i++ {
-		f := files[i]
-		if f.Err != nil {
-			errLines := strings.Split(f.Err.Error(), "\n")
-			if used > 0 && used+1+len(errLines) > room {
-				break
-			}
-			used += 1 + len(errLines)
-			end = i + 1
+	for i := start; i < len(rows); i++ {
+		n := lines(i)
+		if used > 0 && used+n > room {
+			break
+		}
+		used += n
+		end = i + 1
+		r := rows[i]
+		if m.heading(rows, i) || (ws && i == start) {
+			fmt.Fprintf(&b, "%s\n", titleStyle.Render(r.service)+" "+dimStyle.Render(m.svc.MigrationsLocation(r.service)))
+		}
+		switch {
+		case r.err != nil:
+			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), errStyle.Render(firstLine(r.err.Error())))
+		case r.file == nil:
+			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), dimStyle.Render("no migration files; press n to create one"))
+		case r.file.Err != nil:
+			f := r.file
 			fmt.Fprintf(&b, "%s%s\n", pointer(i == m.fcur), errStyle.Render(f.Name+"  ERROR"))
-			for _, line := range errLines {
+			for _, line := range strings.Split(f.Err.Error(), "\n") {
 				b.WriteString(errStyle.Render("    " + line))
 				b.WriteRune('\n')
 			}
-			continue
+		default:
+			mg := r.file.Migration
+			fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.fcur), mg.Version, truncate(mg.Name, 24), dimStyle.Render(migSummary(mg)+m.disabledNote(r.service, mg.Version)))
 		}
-		if used >= room {
-			break
-		}
-		used++
-		end = i + 1
-		mg := f.Migration
-		fmt.Fprintf(&b, "%s%-15d %-24s %s\n", pointer(i == m.fcur), mg.Version, truncate(mg.Name, 24), dimStyle.Render(migSummary(mg)+m.disabledNote(mg.Version)))
 	}
-	if len(files) > end {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(files)-end)))
+	if len(rows) > end {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(rows)-end)))
 		b.WriteRune('\n')
 	}
-	count := fmt.Sprintf("%d migration file(s)", len(files))
-	if n := brokenCount(files); n > 0 {
-		count += fmt.Sprintf(" (%d with errors)", n)
+	files, broken := 0, 0
+	for _, r := range rows {
+		if r.file != nil {
+			files++
+			if r.file.Err != nil {
+				broken++
+			}
+		}
 	}
-	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("%s in %s", count, m.svc.MigrationsLocation())))
-	if m.fcur < len(files) && files[m.fcur].Migration != nil && files[m.fcur].Migration.Source != "" {
-		b.WriteString(dimStyle.Render(files[m.fcur].Migration.Source))
+	count := fmt.Sprintf("%d migration file(s)", files)
+	if broken > 0 {
+		count += fmt.Sprintf(" (%d with errors)", broken)
+	}
+	if ws {
+		count += fmt.Sprintf(" in %d service(s)", len(m.svc.DefaultServices()))
+	} else {
+		count += " in " + m.svc.MigrationsLocation("")
+	}
+	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(count))
+	if m.fcur < len(rows) && rows[m.fcur].file != nil && rows[m.fcur].file.Migration != nil && rows[m.fcur].file.Migration.Source != "" {
+		b.WriteString(dimStyle.Render(rows[m.fcur].file.Migration.Source))
 		b.WriteRune('\n')
 	}
 	return b.String() + m.footer(filesHelp)
 }
 
-// fileLines is how many lines the i'th file takes in the list, or 0 past the end.
-func fileLines(files []domain.MigrationFile, i int) int {
-	if i < 0 || i >= len(files) {
-		return 0
-	}
-	if files[i].Err != nil {
-		return 1 + strings.Count(files[i].Err.Error(), "\n") + 1
+// rowLines is how many lines a row takes in the list, without its heading.
+func rowLines(r fileRow) int {
+	if r.file != nil && r.file.Err != nil {
+		return 1 + strings.Count(r.file.Err.Error(), "\n") + 1
 	}
 	return 1
 }
 
-// disabledNote describes a migration's default and any per-target overrides.
-func (m *Model) disabledNote(version int64) string {
-	def := m.svc.MigrationDisabledByDefault(version)
+// disabledNote describes a migration's default and any per-target overrides,
+// among the targets of its service.
+func (m *Model) disabledNote(service string, version int64) string {
+	def := m.svc.MigrationDisabledByDefault(service, version)
 	differ := 0
 	for _, t := range m.targets() {
-		if m.svc.MigrationDisabled(t, version) != def {
+		if t.ref.Service == service && m.svc.MigrationDisabled(t.ref, version) != def {
 			differ++
 		}
 	}
@@ -118,21 +185,27 @@ func migSummary(mg *domain.Migration) string {
 }
 
 func (m *Model) updateFiles(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	files, _ := m.svc.MigrationFiles()
-	// brokenRow reports (and explains) that the selected file cannot be acted on.
-	brokenRow := func() bool {
-		if m.fcur < len(files) && files[m.fcur].Err != nil {
-			m.notice = "fix " + files[m.fcur].Name + " first"
-			return true
-		}
-		return false
+	rows := m.fileRows()
+	var sel *fileRow
+	if m.fcur < len(rows) {
+		sel = &rows[m.fcur]
 	}
-	var migs []*domain.Migration
-	if m.fcur < len(files) {
-		migs = make([]*domain.Migration, len(files))
-		for i, f := range files {
-			migs[i] = f.Migration
+	// selected returns the selected migration, or explains why there is none
+	// to act on.
+	selected := func() *domain.Migration {
+		switch {
+		case sel == nil:
+			return nil
+		case sel.err != nil:
+			m.notice = firstLine(sel.err.Error())
+		case sel.file == nil:
+			m.notice = "no migration files in " + sel.service + "; press n to create one"
+		case sel.file.Err != nil:
+			m.notice = "fix " + sel.file.Name + " first"
+		default:
+			return sel.file.Migration
 		}
+		return nil
 	}
 	switch key.String() {
 	case "q":
@@ -146,64 +219,70 @@ func (m *Model) updateFiles(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fcur--
 		}
 	case "down", "j":
-		if m.fcur < len(files)-1 {
+		if m.fcur < len(rows)-1 {
 			m.fcur++
 		}
 	case "enter":
-		if brokenRow() {
-			break
-		}
-		if m.fcur < len(migs) {
-			return m, m.goToAll(migs[m.fcur])
+		if mg := selected(); mg != nil {
+			return m, m.goToAll(sel.service, mg)
 		}
 	case "e":
-		if brokenRow() {
+		mg := selected()
+		if mg == nil {
 			break
 		}
-		if m.fcur < len(migs) {
-			mg := migs[m.fcur]
-			enable := m.svc.MigrationDisabledByDefault(mg.Version)
-			if err := m.svc.SetMigrationEnabledDefault(mg.Version, enable); err != nil {
-				m.notice = err.Error()
-				break
+		service := sel.service
+		enable := m.svc.MigrationDisabledByDefault(service, mg.Version)
+		if err := m.svc.SetMigrationEnabledDefault(service, mg.Version, enable); err != nil {
+			m.notice = err.Error()
+			break
+		}
+		// Targets with their own override keep it; refresh the rest.
+		for _, t := range m.targets() {
+			if t.ref.Service != service {
+				continue
 			}
-			// Targets with their own override keep it; refresh the rest.
-			for _, t := range m.targets() {
-				st := m.state(t.Name)
-				for i := range st.items {
-					if st.items[i].Version == mg.Version {
-						st.items[i].Disabled, st.items[i].Reason = m.svc.MigrationSetting(t, mg.Version)
-					}
+			st := m.state(t.ref)
+			for i := range st.items {
+				if st.items[i].Version == mg.Version {
+					st.items[i].Disabled, st.items[i].Reason = m.svc.MigrationSetting(t.ref, mg.Version)
 				}
 			}
-			if enable {
-				m.notice = fmt.Sprintf("enabled %d_%s by default; per-target overrides are kept", mg.Version, mg.Name)
-			} else {
-				m.notice = fmt.Sprintf("disabled %d_%s by default; per-target overrides are kept", mg.Version, mg.Name)
-			}
+		}
+		if enable {
+			m.notice = fmt.Sprintf("enabled %d_%s by default; per-target overrides are kept", mg.Version, mg.Name)
+		} else {
+			m.notice = fmt.Sprintf("disabled %d_%s by default; per-target overrides are kept", mg.Version, mg.Name)
 		}
 	case "r":
 		m.reloadMigrations()
 		return m, m.refreshAll()
 	case "n":
-		return m, m.openNewMigrationForm()
+		service := ""
+		if sel != nil {
+			service = sel.service
+		} else if svcs := m.svc.DefaultServices(); len(svcs) > 0 {
+			service = svcs[0]
+		}
+		return m, m.openNewMigrationForm(service)
 	}
 	return m, nil
 }
 
-// goToAll migrates every enabled target to the selected migration file: targets
-// where it is pending apply up to and including it, targets where it is applied
-// roll back everything newer. Targets that are already there, still loading,
-// busy, or have the migration dirty or missing are skipped and named.
-func (m *Model) goToAll(mg *domain.Migration) tea.Cmd {
+// goToAll migrates every enabled target of service to the selected migration
+// file: targets where it is pending apply up to and including it, targets
+// where it is applied roll back everything newer. Targets that are already
+// there, still loading, busy, or have the migration dirty or missing are
+// skipped and named.
+func (m *Model) goToAll(service string, mg *domain.Migration) tea.Cmd {
 	label := fmt.Sprintf("%d_%s", mg.Version, mg.Name)
 	var ups, downs, skipped []string
 	var runs []func(*Model) tea.Cmd
 	for _, t := range m.targets() {
-		if t.Disabled {
+		if t.Disabled || t.ref.Service != service {
 			continue
 		}
-		st := m.state(t.Name)
+		st := m.state(t.ref)
 		var it *domain.Item
 		for i := range st.items {
 			if st.items[i].Version == mg.Version {
@@ -211,12 +290,12 @@ func (m *Model) goToAll(mg *domain.Migration) tea.Cmd {
 			}
 		}
 		if st.running || !st.loaded || it == nil || it.State == domain.Dirty || it.State == domain.Missing || (it.State == domain.Pending && it.Disabled) {
-			skipped = append(skipped, t.Name)
+			skipped = append(skipped, t.label())
 			continue
 		}
 		t := t
 		if it.State == domain.Pending {
-			ups = append(ups, t.Name)
+			ups = append(ups, t.label())
 			runs = append(runs, func(m *Model) tea.Cmd { return m.upTo(t, mg.Version) })
 			continue
 		}
@@ -227,7 +306,7 @@ func (m *Model) goToAll(mg *domain.Migration) tea.Cmd {
 			}
 		}
 		if newer > 0 {
-			downs = append(downs, t.Name)
+			downs = append(downs, t.label())
 			runs = append(runs, func(m *Model) tea.Cmd { return m.downTo(t, mg.Version) })
 		}
 	}

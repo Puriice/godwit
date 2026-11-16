@@ -12,7 +12,10 @@ import (
 )
 
 // memDriver keeps the state table in memory.
-type memDriver struct{ conn *memConn }
+type memDriver struct {
+	conn  *memConn
+	table string // the Target.Table of the last Open
+}
 
 func (memDriver) Info() Info {
 	return Info{Name: "MemDB", Aliases: []string{"mem"}, Schemes: []string{"memdb"}, NoHost: true}
@@ -30,7 +33,7 @@ func (d *memDriver) Open(_ context.Context, t Target, _ string) (Connection, err
 	if t.Database == "missing" {
 		return nil, errors.New("no such database")
 	}
-	d.conn = &memConn{}
+	d.conn, d.table = &memConn{}, t.Table
 	return d.conn, nil
 }
 
@@ -219,3 +222,17 @@ func TestWriteFailureStopsServing(t *testing.T) {
 type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestOpenPassesStateTable(t *testing.T) {
+	for _, tc := range []struct{ open, want string }{
+		{`{"id":1,"method":"open","params":{"target":{"driver":"memdb","database":"a"},"table":"godwit_migration_users"}}`, "godwit_migration_users"},
+		// A godwit that predates protocol 2 sends no table: the default applies.
+		{`{"id":1,"method":"open","params":{"target":{"driver":"memdb","database":"a"}}}`, "godwit_migration"},
+	} {
+		d := &memDriver{}
+		r := session(t, d, tc.open)
+		if e := errOf(r[0]); e != "" || d.table != tc.want {
+			t.Errorf("open %s: err=%q table=%q, want %q", tc.open, e, d.table, tc.want)
+		}
+	}
+}

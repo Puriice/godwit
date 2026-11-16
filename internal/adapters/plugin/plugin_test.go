@@ -39,6 +39,8 @@ func runFake(mode string) {
 	switch mode {
 	case "oldproto":
 		protocol = 99
+	case "proto1":
+		protocol = 1
 	case "builtin":
 		driver = "postgres"
 	}
@@ -83,6 +85,10 @@ func runFake(mode string) {
 			var p openParams
 			json.Unmarshal(req.Params, &p)
 			params = p.Target.Params
+			if want := params["table"]; want != "" && p.Table != want {
+				reply(nil, fmt.Sprintf("table %q, want %q", p.Table, want))
+				continue
+			}
 			if p.Password != "secret" {
 				reply(nil, "bad password")
 				continue
@@ -181,7 +187,7 @@ func TestHandshakeAndRegistry(t *testing.T) {
 func TestLifecycle(t *testing.T) {
 	f := fakeFactory(t, "ok")
 	ctx := context.Background()
-	db, err := app.Combine(f).Open(ctx, domain.Target{Name: "x", Driver: "FakeDB"}, "secret")
+	db, err := app.Combine(f).Open(ctx, domain.Target{Name: "x", Driver: "FakeDB"}, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,10 +238,10 @@ func TestLifecycle(t *testing.T) {
 func TestRemoteErrorKeepsConnection(t *testing.T) {
 	f := fakeFactory(t, "ok")
 	ctx := context.Background()
-	if _, err := f.Open(ctx, domain.Target{Driver: "fakedb"}, "wrong"); err == nil || !strings.Contains(err.Error(), "bad password") {
+	if _, err := f.Open(ctx, domain.Target{Driver: "fakedb"}, "wrong", "godwit_migration"); err == nil || !strings.Contains(err.Error(), "bad password") {
 		t.Fatalf("open with bad password: %v", err)
 	}
-	db, err := f.Open(ctx, domain.Target{Driver: "fakedb"}, "secret")
+	db, err := f.Open(ctx, domain.Target{Driver: "fakedb"}, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +258,7 @@ func TestRemoteErrorKeepsConnection(t *testing.T) {
 func TestPluginCrash(t *testing.T) {
 	f := fakeFactory(t, "ok")
 	ctx := context.Background()
-	db, err := f.Open(ctx, domain.Target{Driver: "fakedb", Params: map[string]string{"crash": "apply"}}, "secret")
+	db, err := f.Open(ctx, domain.Target{Driver: "fakedb", Params: map[string]string{"crash": "apply"}}, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +275,7 @@ func TestPluginCrash(t *testing.T) {
 
 func TestCancelledContextFailsCall(t *testing.T) {
 	f := fakeFactory(t, "ok")
-	db, err := f.Open(context.Background(), domain.Target{Driver: "fakedb"}, "secret")
+	db, err := f.Open(context.Background(), domain.Target{Driver: "fakedb"}, "secret", "godwit_migration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +314,38 @@ func TestMissingExecutable(t *testing.T) {
 
 func TestOpenUnknownDriver(t *testing.T) {
 	f := fakeFactory(t, "ok")
-	if _, err := f.Open(context.Background(), domain.Target{Driver: "oracle"}, ""); err == nil {
+	if _, err := f.Open(context.Background(), domain.Target{Driver: "oracle"}, "", "godwit_migration"); err == nil {
 		t.Error("expected unknown driver error")
+	}
+}
+
+func TestOpenSendsStateTable(t *testing.T) {
+	f := fakeFactory(t, "ok")
+	ctx := context.Background()
+	tg := domain.Target{Driver: "fakedb", Params: map[string]string{"table": "godwit_migration_users"}}
+	db, err := f.Open(ctx, tg, "secret", "godwit_migration_users")
+	if err != nil {
+		t.Fatalf("open with the table the plugin expects: %v", err)
+	}
+	db.Close()
+	if _, err := f.Open(ctx, tg, "secret", "godwit_migration"); err == nil || !strings.Contains(err.Error(), "godwit_migration_users") {
+		t.Errorf("the plugin should have seen the other table: %v", err)
+	}
+}
+
+func TestProtocol1PluginOnlyServesTheDefaultTable(t *testing.T) {
+	f := fakeFactory(t, "proto1")
+	if len(f.Drivers()) != 1 || len(f.Warnings()) != 0 {
+		t.Fatalf("a protocol 1 plugin should still load: drivers=%v warnings=%v", f.Drivers(), f.Warnings())
+	}
+	ctx := context.Background()
+	db, err := f.Open(ctx, domain.Target{Driver: "fakedb"}, "secret", domain.DefaultStateTable)
+	if err != nil {
+		t.Fatalf("plain project: %v", err)
+	}
+	db.Close()
+	_, err = f.Open(ctx, domain.Target{Driver: "fakedb"}, "secret", "godwit_migration_users")
+	if err == nil || !strings.Contains(err.Error(), "protocol 1") || !strings.Contains(err.Error(), "godwit_migration_users") {
+		t.Errorf("service table on a protocol 1 plugin: %v", err)
 	}
 }

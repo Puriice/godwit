@@ -39,10 +39,14 @@ Settings live in `.godwit/`:
 
 | File | Contents | Commit it? |
 |---|---|---|
-| `.godwit/config.json` | migrations directory and targets (no passwords) | yes |
+| `.godwit/config.json` | migrations directory and targets (no passwords); in a monorepo, also `services` or `service` | yes |
 | `.godwit/.env` | `GODWIT_<TARGET>_PASSWORD=...` | no |
 | `.godwit/.gitignore` | created automatically; ignores `.env` | yes |
 
 A password in the process environment overrides `.env`, so CI needs no file.
 After a fresh clone, the TUI asks for each missing password. The CLI never
 prompts; it fails on that target instead.
+
+A repository with several services, each with its own migrations and
+databases, can be set up as a workspace. See
+[Monorepos and services](./monorepos.md).

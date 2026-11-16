@@ -52,7 +52,7 @@ func TestFilesCursorStaysVisible(t *testing.T) {
 	m := testModel(t)
 	m.width, m.height = 100, 24
 	for i := range 25 {
-		if _, err := m.svc.CreateMigration(fmt.Sprintf("m%02d", i)); err != nil {
+		if _, err := m.svc.CreateMigration("", fmt.Sprintf("m%02d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -77,10 +77,10 @@ func TestFilesCursorStaysVisible(t *testing.T) {
 func TestFilesCursorStaysVisibleWithBrokenFiles(t *testing.T) {
 	m := testModel(t)
 	m.width, m.height = 100, 24
-	if err := m.svc.EnsureMigrationsDir(); err != nil {
+	if err := m.svc.EnsureMigrationsDir(""); err != nil {
 		t.Fatal(err)
 	}
-	dir := m.svc.MigrationsLocation()
+	dir := m.svc.MigrationsLocation("")
 	for i := range 25 {
 		body := "-- +godwit Up\nCREATE TABLE t (id INTEGER);\n-- +godwit Down\nDROP TABLE t;\n"
 		if i%3 == 0 {
@@ -90,7 +90,7 @@ func TestFilesCursorStaysVisibleWithBrokenFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	files, _ := m.svc.MigrationFiles()
+	files, _ := m.svc.MigrationFiles("")
 	if brokenCount(files) == 0 {
 		t.Skip("no file failed to parse")
 	}

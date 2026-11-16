@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -45,10 +46,19 @@ Migrations:
 
 Background runs:
   process list [target...]                 show background runs and their queues
-  process show <target> [-n LINES]         details, queue and log tail of a run
+  process show [-n LINES] <target>         details, queue and log tail of a run
   process cancel <target>                  cancel the run in progress
   process dequeue <target> <position>      remove one queued job
   process clear-queue <target>             remove every queued job of a target
+
+Services (monorepos):
+  service list                             list the services of this workspace
+  service add <dir> [name]                 make <dir> a service and add it to the workspace
+  service remove <name>                    take a service out of the workspace (files are kept)
+  -s, --service NAME                       (auth, migrate, process, translate) limit a command to
+                                           one service; repeatable. Default: every service at the
+                                           workspace root, the current one inside a service directory.
+                                           A target can also be named service/target, as in users/dev
 
 Plugins:
   plugin install [-g|-G] <url> [name]      build a driver plugin from a Go package and add it
@@ -73,7 +83,7 @@ func main() {
 		cmd = args[0]
 	}
 	switch cmd {
-	case "", "init", "auth", "migrate", "process", "plugin", "translate", detach.WorkerCommand, detach.LaunchCommand:
+	case "", "init", "auth", "migrate", "process", "plugin", "translate", "service", detach.WorkerCommand, detach.LaunchCommand:
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -82,16 +92,54 @@ func main() {
 		os.Exit(2)
 	}
 
-	root, err := os.Getwd()
+	cwd, err := os.Getwd()
 	if err != nil {
 		fatal(err)
+	}
+	// The project is the working directory, unless it is a service of a
+	// workspace listed further up: then the workspace root holds the global
+	// targets, the background runs and the plugin binaries.
+	layout, err := filestore.Discover(cwd)
+	if err != nil {
+		fatal(err)
+	}
+	root := layout.Root
+	// Work from the workspace root, as detached workers do, so that relative
+	// paths in any configuration (a SQLite file, a plugin command) mean the
+	// same wherever godwit is started.
+	if root != cwd {
+		if err := os.Chdir(root); err != nil {
+			fatal(err)
+		}
+	}
+	for _, w := range layout.Warnings {
+		fmt.Fprintln(os.Stderr, "godwit: warning:", w)
 	}
 	store := filestore.New(root)
 	project, err := store.Load()
 	if err != nil {
 		fatal(err)
 	}
-	// Global plugins live in ~/.godwit; a project's own entries replace them.
+	type loaded struct {
+		info  filestore.ServiceInfo
+		store *filestore.Store
+	}
+	var services []loaded
+	var servicePlugins []domain.ServicePlugins
+	for _, si := range layout.Services {
+		st := filestore.NewService(layout.Dir(si), si.Name)
+		p, err := st.Load()
+		if err != nil {
+			fatal(fmt.Errorf("service %s: %w", si.Dir, err))
+		}
+		if !si.Configured {
+			fmt.Fprintf(os.Stderr, "godwit: warning: service %s (%s) has no .godwit/config.json yet; run: godwit service add %s\n", si.Name, si.Dir, si.Dir)
+		}
+		services = append(services, loaded{si, st})
+		servicePlugins = append(servicePlugins, domain.ServicePlugins{Service: si.Name, Plugins: p.Plugins})
+	}
+	// Global plugins live in ~/.godwit; a project's own entries replace them,
+	// and in a workspace so do the services' entries.
 	var global *filestore.Store
 	specs := project.Plugins
 	if home, err := os.UserHomeDir(); err == nil {
@@ -102,8 +150,9 @@ func main() {
 		}
 		specs = domain.MergePlugins(g.Plugins, project.Plugins)
 	}
+	specs, pluginWarnings := domain.MergeWorkspacePlugins(specs, servicePlugins)
 	plugins := plugin.New(root, specs)
-	for _, w := range plugins.Warnings() {
+	for _, w := range append(pluginWarnings, plugins.Warnings()...) {
 		fmt.Fprintln(os.Stderr, "godwit: warning:", w)
 	}
 	dbs := app.Combine(sqldb.NewFactory(), plugins)
@@ -118,6 +167,31 @@ func main() {
 	if global != nil {
 		if err := svc.SetGlobalStore(global); err != nil {
 			fatal(err)
+		}
+	}
+	for _, l := range services {
+		if err := svc.LoadService(l.info.Name, l.info.Dir, l.store); err != nil {
+			fatal(err)
+		}
+	}
+	if err := svc.SetCurrentService(layout.Current); err != nil {
+		fatal(err)
+	}
+	newServiceStore := func(dir, name string) app.ProjectStore {
+		return filestore.NewService(filepath.Join(root, filepath.FromSlash(dir)), name)
+	}
+	// serviceDir turns a directory relative to base into a service directory
+	// relative to the workspace root.
+	serviceDir := func(base string) func(string) (string, bool) {
+		return func(dir string) (string, bool) {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(base, dir)
+			}
+			rel, err := filepath.Rel(root, dir)
+			if err != nil {
+				return "", false
+			}
+			return filestore.CleanServiceDir(rel)
 		}
 	}
 
@@ -143,6 +217,10 @@ func main() {
 		}, args[1:], os.Stdout)
 	case "translate":
 		err = cli.Translate(context.Background(), svc, args[1:], os.Stdout)
+	case "service":
+		// On the command line a directory is relative to where godwit was
+		// started, as a shell user expects.
+		err = cli.Service(svc, cli.ServiceOps{NewStore: newServiceStore, CleanDir: serviceDir(cwd)}, args[1:], os.Stdout)
 	case "migrate":
 		var bg app.BackgroundRunner // stays nil if the executable can't be found; --detach then errors
 		if runner, rerr := detach.New(root); rerr == nil {
@@ -181,6 +259,8 @@ func main() {
 				return plugin.Install(ctx, dir, pkg, out, out)
 			},
 		})
+		// The TUI asks for a directory relative to the workspace root.
+		model.WithServiceOps(tui.ServiceOps{NewStore: newServiceStore, CleanDir: serviceDir(root)})
 		// Runs go to detached workers so they survive quitting the TUI.
 		if runner, rerr := detach.New(root); rerr == nil {
 			model.WithBackground(runner)
